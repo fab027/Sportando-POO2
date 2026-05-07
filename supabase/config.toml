@@ -1,0 +1,7 @@
+project_id = "jhhrtlxufchpkqcowpbu"
+
+[functions.sports-data]
+verify_jwt = false
+
+[functions.sports-chat]
+verify_jwt = false
