@@ -5,6 +5,7 @@ import type {
   PlayerDetail,
   TeamPlayer,
   TodayMatch,
+  SofaTopPlayer,
 } from "@/services/sofaScoreService";
 
 const footballTeams = [
@@ -126,3 +127,25 @@ export const getFallbackTodayMatches = (): TodayMatch[] => getFallbackMatches("f
   time: new Date(m.startTimestamp * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
   tournament: m.tournament,
 }));
+
+export const getFallbackTopPlayers = (metric: "goals" | "assists"): SofaTopPlayer[] => {
+  const names = metric === "goals"
+    ? ["Pedro", "K. Viveros", "Luciano", "C. Vinicius", "J. Lopez", "D. Oliveira"]
+    : ["A. Pereira", "Arrascaeta", "L. Juba", "Everton Ribeiro", "Ganso", "Alan Patrick"];
+  const teams = ["Flamengo", "Athletico", "Sao Paulo", "Gremio", "Palmeiras", "Bahia"];
+
+  return names.map((name, i) => {
+    const value = Math.max(1, 9 - i);
+    return {
+      id: 5000 + i,
+      name,
+      fullName: name,
+      team: teams[i] || "",
+      value,
+      goals: metric === "goals" ? value : Math.max(0, 3 - (i % 3)),
+      assists: metric === "assists" ? value : Math.max(0, 2 - (i % 2)),
+      appearances: 10 + i,
+      rating: 7.4 - i * 0.05,
+    };
+  });
+};

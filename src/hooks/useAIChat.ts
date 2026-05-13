@@ -1,4 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import type { League } from "@/data/leagues";
+import { analyzeRawDataLocally, resolveSportsDashboard } from "@/services/aggregatorService";
 
 interface Message {
   role: "user" | "assistant";
@@ -7,7 +9,7 @@ interface Message {
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sports-chat`;
 
-export const useAIChat = () => {
+export const useAIChat = (league: League) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const messagesRef = useRef<Message[]>([]);
@@ -25,6 +27,16 @@ export const useAIChat = () => {
     const allMessages = [...messagesRef.current, userMsg];
 
     try {
+      const localDashboard =
+        mode === "analyze"
+          ? analyzeRawDataLocally(input)
+          : await resolveSportsDashboard(input, league).catch(() => null);
+
+      if (localDashboard) {
+        setMessages(prev => [...prev, { role: "assistant", content: JSON.stringify(localDashboard, null, 2) }]);
+        return;
+      }
+
       const resp = await fetch(CHAT_URL, {
         method: "POST",
         headers: {
@@ -82,14 +94,23 @@ export const useAIChat = () => {
       }
     } catch (e) {
       console.error("AI chat error:", e);
+      const fallbackDashboard =
+        mode === "analyze"
+          ? analyzeRawDataLocally(input)
+          : await resolveSportsDashboard(input, league).catch(() => null);
       setMessages(prev => [
         ...prev,
-        { role: "assistant", content: `Erro: ${e instanceof Error ? e.message : "Erro desconhecido"}` },
+        {
+          role: "assistant",
+          content: fallbackDashboard
+            ? JSON.stringify(fallbackDashboard, null, 2)
+            : "Nao consegui acessar a IA remota agora. Para dados atuais, tente perguntas como: artilheiros, assistencias, classificacao ou jogos de hoje da liga selecionada.",
+        },
       ]);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [league]);
 
   const clearMessages = useCallback(() => {
     messagesRef.current = [];

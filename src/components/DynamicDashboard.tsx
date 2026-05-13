@@ -43,19 +43,21 @@ const DynamicDashboard = ({ data }: DynamicDashboardProps) => {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-border">
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Item</th>
+                <tr className="border-b border-border bg-secondary/40">
+                  <th className="w-14 px-3 py-3 text-center text-xs font-semibold uppercase text-muted-foreground">#</th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold uppercase text-muted-foreground">Nome</th>
                   {data.datasets.map(ds => (
-                    <th key={ds.nome} className="px-3 py-2 text-left font-medium text-muted-foreground">{ds.nome}</th>
+                    <th key={ds.nome} className="px-3 py-3 text-right text-xs font-semibold uppercase text-muted-foreground">{ds.nome}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {data.labels.map((label, i) => (
                   <tr key={label} className="border-b border-border last:border-0 hover:bg-secondary/30">
-                    <td className="px-3 py-2 font-medium text-foreground">{label}</td>
+                    <td className="px-3 py-3 text-center font-mono text-xs text-muted-foreground">{i + 1}</td>
+                    <td className="min-w-52 px-3 py-3 font-medium text-foreground">{label}</td>
                     {data.datasets.map(ds => (
-                      <td key={ds.nome} className="px-3 py-2 text-muted-foreground">{ds.dados[i]}</td>
+                      <td key={ds.nome} className="px-3 py-3 text-right font-semibold text-sport">{ds.dados[i]}</td>
                     ))}
                   </tr>
                 ))}

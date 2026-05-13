@@ -9,6 +9,7 @@ import {
   PlayerDetail,
   OddsMatch,
   TeamPlayer,
+  SofaTopPlayer,
 } from "@/services/sofaScoreService";
 import {
   getFallbackMatches,
@@ -17,6 +18,7 @@ import {
   getFallbackStandings,
   getFallbackTeamPlayers,
   getFallbackTodayMatches,
+  getFallbackTopPlayers,
 } from "@/data/sportsFallback";
 
 // Simple in-memory cache (TTL 5 min)
@@ -119,7 +121,7 @@ export function useLiveMatches() {
   const fetchData = useCallback(async () => {
     setStatus("loading");
     try {
-      const key = "live_v6_all";
+      const key = "live_v7_all";
       const hit = cache[key];
       let res: SofaLiveMatch[];
       if (hit && Date.now() - hit.ts < 15_000) {
@@ -170,6 +172,33 @@ export function useTodayMatches() {
 }
 
 // ─── Player Search ────────────────────────────────────────────────────────────
+export function useTopPlayers(leagueUrl: string, metric: "goals" | "assists") {
+  const [data, setData] = useState<SofaTopPlayer[]>([]);
+  const [status, setStatus] = useState<Status>("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchData = useCallback(async () => {
+    setStatus("loading");
+    try {
+      const res = await cached(`top_players_v1_${leagueUrl}_${metric}`, () =>
+        sofaScoreService.getTopPlayers(leagueUrl, metric)
+      );
+      setData(Array.isArray(res) && res.length > 0 ? res : getFallbackTopPlayers(metric));
+      setStatus("success");
+    } catch (e) {
+      setData(getFallbackTopPlayers(metric));
+      setError(e instanceof Error ? e.message : "Erro ao carregar ranking de jogadores");
+      setStatus("success");
+    }
+  }, [leagueUrl, metric]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  return { data, status, error, refetch: fetchData };
+}
+
 export function usePlayerSearch() {
   const [results, setResults] = useState<PlayerSearchResult[]>([]);
   const [status, setStatus] = useState<Status>("idle");

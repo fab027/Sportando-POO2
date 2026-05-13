@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from "react";
-import { Send, Upload, FileText, MessageSquare, Trash2, Sparkles } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Send, Upload, FileText, MessageSquare, Trash2, Sparkles, Archive } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { useAIChat } from "@/hooks/useAIChat";
 import DynamicDashboard, { DashboardData } from "@/components/DynamicDashboard";
@@ -19,31 +19,57 @@ const tryParseJSON = (text: string): DashboardData | null => {
 };
 
 const DataAggregatorPage = () => {
-  const { sportClass } = useSport();
+  const { sportClass, league } = useSport();
   const [tab, setTab] = useState<Tab>("chat");
   const [input, setInput] = useState("");
   const [rawText, setRawText] = useState("");
-  const { messages, isLoading, sendMessage, clearMessages } = useAIChat();
+  const { messages, isLoading, sendMessage, clearMessages } = useAIChat(league);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [dashboards, setDashboards] = useState<DashboardData[]>([]);
+  const [currentDashboard, setCurrentDashboard] = useState<DashboardData | null>(null);
+  const [dashboardHistory, setDashboardHistory] = useState<DashboardData[]>([]);
+  const lastDashboardKeyRef = useRef<string | null>(null);
+  const lastDashboardMessageIndexRef = useRef<number | null>(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Parse dashboards from assistant messages
+  const archiveCurrentDashboard = useCallback(() => {
+    if (!currentDashboard) return;
+    setDashboardHistory(prev => [currentDashboard, ...prev].slice(0, 8));
+    setCurrentDashboard(null);
+    lastDashboardKeyRef.current = JSON.stringify(currentDashboard);
+  }, [currentDashboard]);
+
+  // Parse the latest dashboard from assistant messages. Older results stay archived.
   useEffect(() => {
-    const parsed: DashboardData[] = [];
-    messages.filter(m => m.role === "assistant").forEach(m => {
+    let latest: DashboardData | null = null;
+    let latestIndex = -1;
+
+    messages.forEach((m, index) => {
+      if (m.role !== "assistant") return;
       const d = tryParseJSON(m.content);
-      if (d) parsed.push(d);
+      if (d) {
+        latest = d;
+        latestIndex = index;
+      }
     });
-    if (parsed.length > 0) setDashboards(parsed);
+    if (!latest) return;
+    if (latestIndex === lastDashboardMessageIndexRef.current) return;
+
+    const dashboardKey = JSON.stringify(latest);
+    setCurrentDashboard(prev => {
+      if (prev) setDashboardHistory(history => [prev, ...history].slice(0, 8));
+      return latest;
+    });
+    lastDashboardKeyRef.current = dashboardKey;
+    lastDashboardMessageIndexRef.current = latestIndex;
   }, [messages]);
 
   const handleSendChat = () => {
     if (!input.trim() || isLoading) return;
+    archiveCurrentDashboard();
     sendMessage(input.trim(), "search");
     setInput("");
   };
@@ -58,10 +84,25 @@ const DataAggregatorPage = () => {
 
   const handleAnalyzeData = () => {
     if (!rawText.trim() || isLoading) return;
-    sendMessage(
-      `Analise os seguintes dados e gere um dashboard:\n\n${rawText}`,
-      "analyze"
-    );
+    archiveCurrentDashboard();
+    sendMessage(rawText, "analyze");
+  };
+
+  const handleClearConversation = () => {
+    clearMessages();
+    setCurrentDashboard(null);
+    setDashboardHistory([]);
+    lastDashboardKeyRef.current = null;
+    lastDashboardMessageIndexRef.current = null;
+  };
+
+  const restoreDashboard = (dashboard: DashboardData, index: number) => {
+    setDashboardHistory(prev => {
+      const remaining = prev.filter((_, i) => i !== index);
+      return currentDashboard ? [currentDashboard, ...remaining].slice(0, 8) : remaining;
+    });
+    setCurrentDashboard(dashboard);
+    lastDashboardKeyRef.current = JSON.stringify(dashboard);
   };
 
   return (
@@ -72,7 +113,7 @@ const DataAggregatorPage = () => {
           Agregador de Dados
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pesquise dados via IA ou forneça seus próprios dados para gerar dashboards personalizados
+          Consulte dados atualizados do SofaScore ou forneça seus próprios dados para gerar dashboards personalizados
         </p>
       </div>
 
@@ -84,7 +125,7 @@ const DataAggregatorPage = () => {
             tab === "chat" ? "bg-sport text-sport-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
           }`}
         >
-          <MessageSquare className="h-4 w-4" /> Chat com IA
+          <MessageSquare className="h-4 w-4" /> Consulta inteligente
         </button>
         <button
           onClick={() => setTab("dados")}
@@ -108,8 +149,8 @@ const DataAggregatorPage = () => {
                     <div>
                       <Sparkles className="mx-auto h-10 w-10 text-muted-foreground/30" />
                       <p className="mt-3 text-sm text-muted-foreground">
-                        Pergunte sobre dados esportivos.<br />
-                        Ex: "Quais os artilheiros do Brasileirão 2025?"
+                        Pergunte sobre dados esportivos atualizados.<br />
+                        Ex: "Quais os artilheiros do Brasileirão 2026?"
                       </p>
                     </div>
                   </div>
@@ -154,7 +195,7 @@ const DataAggregatorPage = () => {
                     value={input}
                     onChange={e => setInput(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && handleSendChat()}
-                    placeholder="Pergunte sobre dados esportivos..."
+                    placeholder="Ex: artilheiros, assistências, classificação, jogos de hoje..."
                     className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:border-sport focus:outline-none focus:ring-1 focus:ring-sport"
                     disabled={isLoading}
                   />
@@ -167,7 +208,7 @@ const DataAggregatorPage = () => {
                   </button>
                 </div>
                 {messages.length > 0 && (
-                  <button onClick={clearMessages} className="mt-2 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                  <button onClick={handleClearConversation} className="mt-2 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
                     <Trash2 className="h-3 w-3" /> Limpar conversa
                   </button>
                 )}
@@ -221,24 +262,50 @@ const DataAggregatorPage = () => {
               </div>
             </div>
           )}
+
         </div>
 
         {/* Right: Dashboard area */}
-        <div>
-          {dashboards.length === 0 ? (
+        <div className="space-y-4">
+          {!currentDashboard ? (
             <div className="flex h-[500px] items-center justify-center rounded-xl border border-dashed border-border bg-card">
               <div className="text-center">
                 <Sparkles className="mx-auto h-12 w-12 text-muted-foreground/20" />
                 <p className="mt-3 text-sm text-muted-foreground">
-                  Seu dashboard personalizado<br />aparecerá aqui
+                  O proximo resultado<br />aparecera aqui
                 </p>
               </div>
             </div>
           ) : (
-            <div className="space-y-6">
-              {dashboards.map((d, i) => (
-                <DynamicDashboard key={i} data={d} />
-              ))}
+            <DynamicDashboard data={currentDashboard} />
+          )}
+
+          {dashboardHistory.length > 0 && (
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <Archive className="h-4 w-4 text-sport" />
+                  Resultados arquivados
+                </h3>
+                <button
+                  onClick={() => setDashboardHistory([])}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Limpar historico
+                </button>
+              </div>
+              <div className="space-y-2">
+                {dashboardHistory.map((dashboard, i) => (
+                  <button
+                    key={`${dashboard.titulo}-${i}`}
+                    onClick={() => restoreDashboard(dashboard, i)}
+                    className="w-full rounded-lg border border-border bg-secondary/40 px-3 py-2 text-left transition-colors hover:border-sport hover:bg-sport-light"
+                  >
+                    <span className="block text-sm font-medium text-foreground">{dashboard.titulo}</span>
+                    <span className="block text-xs text-muted-foreground">{dashboard.descricao}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
