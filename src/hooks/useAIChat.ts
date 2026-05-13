@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 
 interface Message {
   role: "user" | "assistant";
@@ -10,6 +10,11 @@ const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sports-chat`
 export const useAIChat = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const messagesRef = useRef<Message[]>([]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const sendMessage = useCallback(async (input: string, mode: "search" | "analyze" = "search") => {
     const userMsg: Message = { role: "user", content: input };
@@ -17,7 +22,7 @@ export const useAIChat = () => {
     setIsLoading(true);
 
     let assistantSoFar = "";
-    const allMessages = [...messages, userMsg];
+    const allMessages = [...messagesRef.current, userMsg];
 
     try {
       const resp = await fetch(CHAT_URL, {
@@ -84,9 +89,12 @@ export const useAIChat = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [messages]);
+  }, []);
 
-  const clearMessages = useCallback(() => setMessages([]), []);
+  const clearMessages = useCallback(() => {
+    messagesRef.current = [];
+    setMessages([]);
+  }, []);
 
   return { messages, isLoading, sendMessage, clearMessages };
 };
