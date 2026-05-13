@@ -213,7 +213,7 @@ const MatchesPage = () => {
         {tab === "league" && !isLoading && filtered.length === 0 && !error && (
           <p className="text-center text-sm text-muted-foreground py-8">Nenhuma partida encontrada com os filtros aplicados.</p>
         )}
-        {tab === "league" && filtered.map((m) => (<MatchCard key={`${m.id}_${(m as any)._type}`} m={m} />))}
+        {tab === "league" && filtered.map((m) => (<MatchCard key={`${m.id}_${m._type ?? "match"}`} m={m} />))}
 
         {tab === "today" && !isLoading && filteredToday.length === 0 && (
           <p className="text-center text-sm text-muted-foreground py-8">Nenhum jogo encontrado para os filtros aplicados.</p>

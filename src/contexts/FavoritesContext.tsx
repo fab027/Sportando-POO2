@@ -19,6 +19,25 @@ interface FavoritesContextType {
 
 const FavoritesContext = createContext<FavoritesContextType | undefined>(undefined);
 
+const LOCAL_FAVORITES_KEY = "sportando.localFavorites";
+
+const isLocalUser = (user: ReturnType<typeof useAuth>["user"]) =>
+  user?.app_metadata?.provider === "local";
+
+const getLocalFavoritesKey = (userId: string) => `${LOCAL_FAVORITES_KEY}.${userId}`;
+
+const readLocalFavorites = (userId: string): Favorite[] => {
+  try {
+    return JSON.parse(localStorage.getItem(getLocalFavoritesKey(userId)) ?? "[]") as Favorite[];
+  } catch {
+    return [];
+  }
+};
+
+const writeLocalFavorites = (userId: string, favorites: Favorite[]) => {
+  localStorage.setItem(getLocalFavoritesKey(userId), JSON.stringify(favorites));
+};
+
 export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
   const [favorites, setFavorites] = useState<Favorite[]>([]);
@@ -30,6 +49,11 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setFavorites([]);
       return;
     }
+    if (isLocalUser(user)) {
+      setFavorites(readLocalFavorites(user.id));
+      return;
+    }
+
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -71,6 +95,17 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const exists = favorites.some(
         (f) => f.tipo === fav.tipo && f.referenciaId === fav.referenciaId && f.esporte === fav.esporte
       );
+
+      if (isLocalUser(user)) {
+        const updated = exists
+          ? favorites.filter(
+              (f) => !(f.tipo === fav.tipo && f.referenciaId === fav.referenciaId && f.esporte === fav.esporte)
+            )
+          : [...favorites, fav];
+        setFavorites(updated);
+        writeLocalFavorites(user.id, updated);
+        return;
+      }
 
       if (exists) {
         // Optimistic remove

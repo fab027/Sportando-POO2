@@ -8,6 +8,29 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    proxy: {
+      "/sofascore-api": {
+        target: "https://www.sofascore.com",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/sofascore-api/, "/api/v1"),
+        headers: {
+          Accept: "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+          Referer: "https://www.sofascore.com/",
+        },
+      },
+      "/news-rss": {
+        target: "https://news.google.com",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/news-rss/, "/rss"),
+        headers: {
+          Accept: "application/rss+xml,text/xml",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+        },
+      },
+    },
     hmr: {
       overlay: false,
     },

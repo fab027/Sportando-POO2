@@ -1,185 +1,420 @@
-import { useMemo, useState } from "react";
-import { RefreshCw, Wifi, WifiOff, BrainCircuit, TrendingUp } from "lucide-react";
-import { useOdds } from "@/hooks/useSofaScoreData";
-import FilterBar, { FilterDef } from "@/components/FilterBar";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ExternalLink, Globe2, Instagram, Plus, RefreshCw, Rss, Search, Trash2, Twitter } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { useFavorites } from "@/contexts/FavoritesContext";
 
-const oddsToProb = (odds: number) => (odds > 0 ? (1 / odds) * 100 : 0);
+type SourceType = "site" | "rss" | "x" | "instagram";
+
+type NewsSource = {
+  id: string;
+  type: SourceType;
+  name: string;
+  value: string;
+  enabled: boolean;
+};
+
+type NewsItem = {
+  id: string;
+  title: string;
+  link: string;
+  source: string;
+  publishedAt: string | null;
+  description: string;
+};
+
+const NEWS_SOURCES_KEY = "sportando.newsSources";
+
+const defaultSources: NewsSource[] = [
+  { id: "ge", type: "site", name: "ge / Globo Esporte", value: "ge.globo.com", enabled: true },
+  { id: "lance", type: "site", name: "Lance!", value: "lance.com.br", enabled: true },
+  { id: "espn", type: "site", name: "ESPN Brasil", value: "espn.com.br", enabled: true },
+  { id: "fabrizio-x", type: "x", name: "Fabrizio Romano no X", value: "https://x.com/FabrizioRomano", enabled: true },
+  { id: "fabrizio-instagram", type: "instagram", name: "Fabrizio Romano no Instagram", value: "https://www.instagram.com/fabriziorom/", enabled: false },
+];
+
+const sourceIcons = {
+  site: Globe2,
+  rss: Rss,
+  x: Twitter,
+  instagram: Instagram,
+};
+
+const readSources = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(NEWS_SOURCES_KEY) ?? "null") as NewsSource[] | null;
+    return saved?.length ? saved : defaultSources;
+  } catch {
+    return defaultSources;
+  }
+};
+
+const writeSources = (sources: NewsSource[]) => {
+  localStorage.setItem(NEWS_SOURCES_KEY, JSON.stringify(sources));
+};
+
+const stripHtml = (value: string) => value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+
+const formatDate = (value: string | null) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+const normalizeDomain = (value: string) =>
+  value
+    .replace(/^https?:\/\//i, "")
+    .replace(/^www\./i, "")
+    .split("/")[0]
+    .trim();
+
+const socialLabel = (value: string) =>
+  value
+    .replace(/^https?:\/\/(?:www\.)?/i, "")
+    .replace(/\/$/, "")
+    .replace(/^x\.com\//i, "@")
+    .replace(/^twitter\.com\//i, "@")
+    .replace(/^instagram\.com\//i, "@");
+
+async function fetchGoogleNews(query: string, sourceName: string): Promise<NewsItem[]> {
+  const url = `/news-rss/search?q=${encodeURIComponent(query)}&hl=pt-BR&gl=BR&ceid=BR:pt-419`;
+  const res = await fetch(url, { headers: { Accept: "application/rss+xml,text/xml" } });
+  if (!res.ok) throw new Error(`Google News HTTP ${res.status}`);
+  const xml = await res.text();
+  const doc = new DOMParser().parseFromString(xml, "text/xml");
+  return [...doc.querySelectorAll("item")].slice(0, 8).map((item, index) => {
+    const title = item.querySelector("title")?.textContent || "Notícia";
+    const link = item.querySelector("link")?.textContent || "#";
+    const publishedAt = item.querySelector("pubDate")?.textContent || null;
+    const description = stripHtml(item.querySelector("description")?.textContent || "");
+    return {
+      id: `${sourceName}-${index}-${link}`,
+      title,
+      link,
+      source: sourceName,
+      publishedAt,
+      description,
+    };
+  });
+}
+
+async function fetchDirectRss(source: NewsSource): Promise<NewsItem[]> {
+  const res = await fetch(source.value, { headers: { Accept: "application/rss+xml,text/xml" } });
+  if (!res.ok) throw new Error(`RSS HTTP ${res.status}`);
+  const xml = await res.text();
+  const doc = new DOMParser().parseFromString(xml, "text/xml");
+  return [...doc.querySelectorAll("item, entry")].slice(0, 8).map((item, index) => {
+    const title = item.querySelector("title")?.textContent || "Notícia";
+    const link =
+      item.querySelector("link")?.getAttribute("href") ||
+      item.querySelector("link")?.textContent ||
+      source.value;
+    const publishedAt =
+      item.querySelector("pubDate")?.textContent ||
+      item.querySelector("published")?.textContent ||
+      item.querySelector("updated")?.textContent ||
+      null;
+    const description = stripHtml(
+      item.querySelector("description")?.textContent ||
+        item.querySelector("summary")?.textContent ||
+        item.querySelector("content")?.textContent ||
+        ""
+    );
+    return {
+      id: `${source.id}-${index}-${link}`,
+      title,
+      link,
+      source: source.name,
+      publishedAt,
+      description,
+    };
+  });
+}
 
 const PredictionsPage = () => {
-  const { data: odds, status, refetch } = useOdds();
-  const isLoading = status === "loading";
-  const [filters, setFilters] = useState<Record<string, string>>({ market: "all", favorite: "all" });
+  const { favorites } = useFavorites();
+  const [sources, setSources] = useState<NewsSource[]>(readSources);
+  const [items, setItems] = useState<NewsItem[]>([]);
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [selectedSource, setSelectedSource] = useState("all");
+  const [customQuery, setCustomQuery] = useState("");
+  const [form, setForm] = useState({ type: "site" as SourceType, name: "", value: "" });
+  const requestIdRef = useRef(0);
 
-  const filterDefs: FilterDef[] = [
-    {
-      key: "market",
-      label: "Mercado",
-      options: [
-        { value: "1x2", label: "1X2 (Resultado)" },
-        { value: "draw", label: "Com chance de empate" },
-        { value: "no-draw", label: "Sem empate (basquete)" },
-      ],
+  const favoriteTerms = useMemo(() => favorites.map((fav) => fav.nome).filter(Boolean).slice(0, 8), [favorites]);
+  const searchTerms = useMemo(() => {
+    const typed = customQuery.split(",").map((term) => term.trim()).filter(Boolean);
+    return [...new Set([...favoriteTerms, ...typed])];
+  }, [customQuery, favoriteTerms]);
+  const enabledSources = useMemo(() => sources.filter((source) => source.enabled), [sources]);
+
+  const buildQuery = useCallback(
+    (source: NewsSource) => {
+      const terms = searchTerms.length ? searchTerms : ["futebol brasileiro", "mercado da bola"];
+      const termQuery = terms.map((term) => `"${term}"`).join(" OR ");
+      if (source.type === "site") return `(${termQuery}) futebol site:${normalizeDomain(source.value)}`;
+      if (source.type === "x" || source.type === "instagram") {
+        return `(${termQuery}) futebol ${source.name} ${socialLabel(source.value)}`;
+      }
+      return `(${termQuery}) futebol`;
     },
-    {
-      key: "favorite",
-      label: "Favorito",
-      options: [
-        { value: "home", label: "Casa favorita" },
-        { value: "away", label: "Visitante favorito" },
-        { value: "balanced", label: "Equilibrado (<55%)" },
-      ],
-    },
-  ];
+    [searchTerms]
+  );
 
-  const filtered = useMemo(() => {
-    return odds.filter((o) => {
-      const ph = oddsToProb(o.homeOdds), pd = oddsToProb(o.drawOdds), pa = oddsToProb(o.awayOdds);
-      const max = Math.max(ph, pd, pa);
+  const refreshNews = useCallback(async () => {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    setStatus("loading");
+    try {
+      const batches = await Promise.allSettled(
+        enabledSources.map((source) =>
+          source.type === "rss" && /^https?:\/\//i.test(source.value)
+            ? fetchDirectRss(source)
+            : fetchGoogleNews(buildQuery(source), source.name)
+        )
+      );
+      const seen = new Set<string>();
+      const nextItems = batches
+        .flatMap((batch) => (batch.status === "fulfilled" ? batch.value : []))
+        .filter((item) => {
+          if (seen.has(item.link)) return false;
+          seen.add(item.link);
+          return true;
+        })
+        .sort((a, b) => new Date(b.publishedAt || 0).getTime() - new Date(a.publishedAt || 0).getTime());
+      if (requestIdRef.current === requestId) {
+        setItems(nextItems);
+        setStatus("success");
+      }
+    } catch {
+      if (requestIdRef.current === requestId) setStatus("error");
+    }
+  }, [buildQuery, enabledSources]);
 
-      if (filters.market === "draw" && o.drawOdds <= 0) return false;
-      if (filters.market === "no-draw" && o.drawOdds > 0) return false;
-      if (filters.market === "1x2" && o.drawOdds <= 0) return false;
+  useEffect(() => {
+    writeSources(sources);
+  }, [sources]);
 
-      if (filters.favorite === "home" && ph !== max) return false;
-      if (filters.favorite === "away" && pa !== max) return false;
-      if (filters.favorite === "balanced" && max >= 55) return false;
-      return true;
-    });
-  }, [odds, filters]);
+  useEffect(() => {
+    refreshNews();
+  }, [refreshNews]);
+
+  const filteredItems = useMemo(() => {
+    if (selectedSource === "all") return items;
+    return items.filter((item) => item.source === selectedSource);
+  }, [items, selectedSource]);
+
+  const addSource = (event: FormEvent) => {
+    event.preventDefault();
+    if (!form.name.trim() || !form.value.trim()) return;
+    setSources((current) => [
+      ...current,
+      {
+        id: `${form.type}-${Date.now()}`,
+        type: form.type,
+        name: form.name.trim(),
+        value: form.value.trim(),
+        enabled: true,
+      },
+    ]);
+    setForm({ type: "site", name: "", value: "" });
+  };
+
+  const socialSources = sources.filter((source) => source.type === "x" || source.type === "instagram");
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground flex items-center gap-2">
-            <BrainCircuit className="h-6 w-6 text-sport" />
-            Previsões — Odds Reais
+            <Rss className="h-6 w-6 text-sport" />
+            Notícias dos Favoritos
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground flex items-center gap-1.5">
-            {isLoading ? (
-              <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Carregando odds...</>
-            ) : status === "error" ? (
-              <><WifiOff className="h-3.5 w-3.5 text-destructive" /> Dados offline</>
-            ) : (
-              <><Wifi className="h-3.5 w-3.5 text-sport" /> {filtered.length} de {odds.length} partidas com odds</>
-            )}
+          <p className="mt-1 text-sm text-muted-foreground">
+            Agregue notícias de times e atletas favoritados com fontes personalizadas.
           </p>
         </div>
         <button
-          onClick={refetch}
+          onClick={refreshNews}
           className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground hover:bg-secondary transition-colors"
         >
-          <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-3.5 w-3.5 ${status === "loading" ? "animate-spin" : ""}`} />
           Atualizar
         </button>
       </div>
 
-      <FilterBar
-        filters={filterDefs}
-        values={filters}
-        onChange={(k, v) => setFilters((p) => ({ ...p, [k]: v }))}
-        onClear={() => setFilters({ market: "all", favorite: "all" })}
-      />
-
-      {isLoading && odds.length === 0 && (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="rounded-xl border border-border bg-card p-6 animate-pulse">
-              <div className="h-5 bg-secondary rounded w-3/4 mb-4" />
-              <div className="space-y-3">
-                <div className="h-3 bg-secondary rounded w-full" />
-                <div className="h-3 bg-secondary rounded w-2/3" />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={customQuery}
+                  onChange={(event) => setCustomQuery(event.target.value)}
+                  placeholder="Termos extras separados por vírgula"
+                  className="pl-9"
+                />
               </div>
+              <select
+                value={selectedSource}
+                onChange={(event) => setSelectedSource(event.target.value)}
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="all">Todas as fontes</option>
+                {sources.map((source) => (
+                  <option key={source.id} value={source.name}>
+                    {source.name}
+                  </option>
+                ))}
+              </select>
             </div>
-          ))}
-        </div>
-      )}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(searchTerms.length ? searchTerms : ["futebol brasileiro", "mercado da bola"]).map((term) => (
+                <span key={term} className="rounded-md bg-sport/10 px-2 py-1 text-xs font-medium text-sport">
+                  {term}
+                </span>
+              ))}
+            </div>
+          </div>
 
-      {status === "error" && odds.length === 0 && (
-        <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-6 text-center">
-          <WifiOff className="mx-auto h-8 w-8 text-destructive/50 mb-3" />
-          <p className="text-sm text-muted-foreground mb-3">Não foi possível carregar odds.</p>
-          <button onClick={refetch} className="rounded-lg bg-sport px-4 py-2 text-xs font-medium text-sport-foreground hover:opacity-90">
-            Tentar novamente
-          </button>
-        </div>
-      )}
+          {status === "loading" && items.length === 0 && (
+            <div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-muted-foreground">
+              <RefreshCw className="mx-auto mb-3 h-6 w-6 animate-spin text-sport" />
+              Buscando notícias...
+            </div>
+          )}
 
-      {!isLoading && odds.length > 0 && filtered.length === 0 && (
-        <p className="text-center text-sm text-muted-foreground py-8">Nenhuma partida corresponde aos filtros aplicados.</p>
-      )}
+          {status === "error" && items.length === 0 && (
+            <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-6 text-sm text-muted-foreground">
+              Não foi possível carregar notícias agora. Verifique a conexão e tente atualizar.
+            </div>
+          )}
 
-      <div className="space-y-4">
-        {filtered.map((o) => {
-          const probHome = oddsToProb(o.homeOdds);
-          const probDraw = oddsToProb(o.drawOdds);
-          const probAway = oddsToProb(o.awayOdds);
-          const maxProb = Math.max(probHome, probDraw, probAway);
+          {status !== "loading" && filteredItems.length === 0 && (
+            <div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-muted-foreground">
+              Nenhuma notícia encontrada para os filtros atuais.
+            </div>
+          )}
 
-          return (
-            <div key={o.id} className="rounded-xl border border-border bg-card p-6 hover:shadow-md transition-shadow">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-display font-semibold text-foreground">
-                  {o.homeTeam} vs {o.awayTeam}
-                </h3>
-                <div className="text-right">
-                  {o.tournament && <span className="text-xs text-muted-foreground block">{o.tournament}</span>}
-                  {o.date && <span className="text-xs text-muted-foreground">{o.date}</span>}
-                  {o.bookmaker && <span className="text-[10px] text-muted-foreground block">via {o.bookmaker}</span>}
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="text-foreground flex items-center gap-1">
-                      {probHome === maxProb && <TrendingUp className="h-3 w-3 text-sport" />}
-                      Vitória {o.homeTeam}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">@{o.homeOdds.toFixed(2)}</span>
-                      <span className="font-semibold text-sport">{probHome.toFixed(1)}%</span>
-                    </div>
-                  </div>
-                  <div className="h-2.5 rounded-full bg-secondary overflow-hidden">
-                    <div className="h-full rounded-full bg-sport transition-all" style={{ width: `${Math.max(probHome, 2)}%` }} />
-                  </div>
-                </div>
-
-                {o.drawOdds > 0 && (
+          <div className="space-y-3">
+            {filteredItems.map((item) => (
+              <a
+                key={item.id}
+                href={item.link}
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-xl border border-border bg-card p-5 transition-shadow hover:shadow-md"
+              >
+                <div className="flex items-start justify-between gap-4">
                   <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-foreground">Empate</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">@{o.drawOdds.toFixed(2)}</span>
-                        <span className="font-semibold text-muted-foreground">{probDraw.toFixed(1)}%</span>
-                      </div>
-                    </div>
-                    <div className="h-2.5 rounded-full bg-secondary overflow-hidden">
-                      <div className="h-full rounded-full bg-muted-foreground/40 transition-all" style={{ width: `${Math.max(probDraw, 2)}%` }} />
-                    </div>
+                    <p className="text-xs font-medium text-sport">{item.source}</p>
+                    <h2 className="mt-1 font-display text-lg font-semibold leading-snug text-foreground">{item.title}</h2>
                   </div>
-                )}
-
-                <div>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="text-foreground flex items-center gap-1">
-                      {probAway === maxProb && <TrendingUp className="h-3 w-3 text-sport" />}
-                      Vitória {o.awayTeam}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">@{o.awayOdds.toFixed(2)}</span>
-                      <span className="font-semibold text-muted-foreground">{probAway.toFixed(1)}%</span>
-                    </div>
-                  </div>
-                  <div className="h-2.5 rounded-full bg-secondary overflow-hidden">
-                    <div className="h-full rounded-full bg-muted-foreground/30 transition-all" style={{ width: `${Math.max(probAway, 2)}%` }} />
-                  </div>
+                  <ExternalLink className="mt-1 h-4 w-4 flex-shrink-0 text-muted-foreground" />
                 </div>
+                {item.description && <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{item.description}</p>}
+                {item.publishedAt && <p className="mt-3 text-xs text-muted-foreground">{formatDate(item.publishedAt)}</p>}
+              </a>
+            ))}
+          </div>
+        </div>
+
+        <aside className="space-y-4">
+          <div className="rounded-xl border border-border bg-card p-4">
+            <h2 className="font-display text-sm font-semibold text-foreground">Fontes</h2>
+            <div className="mt-3 space-y-2">
+              {sources.map((source) => {
+                const Icon = sourceIcons[source.type];
+                return (
+                  <div key={source.id} className="flex items-center gap-2 rounded-lg border border-border p-3">
+                    <Icon className="h-4 w-4 text-sport" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-foreground">{source.name}</p>
+                      <p className="truncate text-xs text-muted-foreground">{source.type === "site" ? normalizeDomain(source.value) : socialLabel(source.value)}</p>
+                    </div>
+                    <button
+                      onClick={() =>
+                        setSources((current) =>
+                          current.map((item) => (item.id === source.id ? { ...item, enabled: !item.enabled } : item))
+                        )
+                      }
+                      className={`h-6 rounded-md px-2 text-xs font-medium ${
+                        source.enabled ? "bg-sport text-sport-foreground" : "bg-secondary text-muted-foreground"
+                      }`}
+                    >
+                      {source.enabled ? "ON" : "OFF"}
+                    </button>
+                    {!defaultSources.some((item) => item.id === source.id) && (
+                      <button
+                        onClick={() => setSources((current) => current.filter((item) => item.id !== source.id))}
+                        className="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-destructive"
+                        aria-label="Remover fonte"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <form onSubmit={addSource} className="rounded-xl border border-border bg-card p-4">
+            <h2 className="font-display text-sm font-semibold text-foreground">Adicionar fonte</h2>
+            <div className="mt-3 space-y-3">
+              <select
+                value={form.type}
+                onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as SourceType }))}
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="site">Site de notícias</option>
+                <option value="rss">RSS</option>
+                <option value="x">Perfil do X/Twitter</option>
+                <option value="instagram">Perfil do Instagram</option>
+              </select>
+              <Input
+                value={form.name}
+                onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                placeholder="Nome da fonte"
+              />
+              <Input
+                value={form.value}
+                onChange={(event) => setForm((current) => ({ ...current, value: event.target.value }))}
+                placeholder={form.type === "site" ? "ex: globo.com" : "URL ou @perfil"}
+              />
+              <button className="flex w-full items-center justify-center gap-2 rounded-lg bg-sport px-4 py-2 text-sm font-medium text-sport-foreground hover:opacity-90">
+                <Plus className="h-4 w-4" />
+                Adicionar
+              </button>
+            </div>
+          </form>
+
+          {socialSources.length > 0 && (
+            <div className="rounded-xl border border-border bg-card p-4">
+              <h2 className="font-display text-sm font-semibold text-foreground">Perfis sociais</h2>
+              <div className="mt-3 space-y-2">
+                {socialSources.map((source) => (
+                  <a
+                    key={source.id}
+                    href={source.value.startsWith("@") ? `https://x.com/${source.value.slice(1)}` : source.value}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between rounded-lg border border-border p-3 text-sm text-foreground hover:bg-secondary"
+                  >
+                    <span className="truncate">{source.name}</span>
+                    <ExternalLink className="h-4 w-4 text-muted-foreground" />
+                  </a>
+                ))}
               </div>
             </div>
-          );
-        })}
+          )}
+        </aside>
       </div>
     </div>
   );

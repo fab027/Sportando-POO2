@@ -6,61 +6,112 @@
 
 @layer base {
   :root {
-    --background: 220 20% 97%;
-    --foreground: 220 25% 10%;
+    --background: 214 42% 96%;
+    --foreground: 224 65% 8%;
 
     --card: 0 0% 100%;
-    --card-foreground: 220 25% 10%;
+    --card-foreground: 225 70% 7%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 220 25% 10%;
+    --popover-foreground: 225 70% 7%;
 
-    --primary: 220 25% 10%;
+    --primary: 225 83% 5%;
     --primary-foreground: 0 0% 98%;
 
-    --secondary: 220 15% 92%;
-    --secondary-foreground: 220 25% 10%;
+    --secondary: 214 32% 91%;
+    --secondary-foreground: 225 70% 7%;
 
-    --muted: 220 15% 94%;
-    --muted-foreground: 220 10% 46%;
+    --muted: 214 32% 93%;
+    --muted-foreground: 220 18% 40%;
 
-    --accent: 220 15% 92%;
-    --accent-foreground: 220 25% 10%;
+    --accent: 158 88% 91%;
+    --accent-foreground: 225 83% 5%;
 
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
 
-    --border: 220 15% 90%;
-    --input: 220 15% 90%;
-    --ring: 220 25% 10%;
+    --border: 216 27% 84%;
+    --input: 216 27% 84%;
+    --ring: 158 100% 45%;
 
     --radius: 0.75rem;
 
     /* Sport-specific colors */
-    --football: 160 60% 40%;
-    --football-light: 160 50% 94%;
-    --football-foreground: 0 0% 100%;
+    --football: 158 96% 42%;
+    --football-light: 158 78% 91%;
+    --football-foreground: 225 83% 5%;
 
-    --basketball: 30 90% 52%;
-    --basketball-light: 30 70% 94%;
-    --basketball-foreground: 0 0% 100%;
+    --basketball: 166 90% 38%;
+    --basketball-light: 166 68% 91%;
+    --basketball-foreground: 225 83% 5%;
 
     /* Shared accent */
     --sport-active: var(--football);
     --sport-active-light: var(--football-light);
     --sport-active-foreground: var(--football-foreground);
 
-    --sidebar-background: 0 0% 100%;
-    --sidebar-foreground: 220 25% 10%;
-    --sidebar-primary: 220 25% 10%;
+    --sidebar-background: 225 83% 5%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 158 100% 42%;
     --sidebar-primary-foreground: 0 0% 98%;
-    --sidebar-accent: 220 15% 95%;
-    --sidebar-accent-foreground: 220 25% 10%;
-    --sidebar-border: 220 15% 92%;
-    --sidebar-ring: 220 25% 10%;
+    --sidebar-accent: 224 54% 12%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 224 40% 17%;
+    --sidebar-ring: 158 100% 42%;
 
     --font-display: 'Space Grotesk', sans-serif;
     --font-body: 'Inter', sans-serif;
+  }
+
+  .dark {
+    --background: 224 63% 7%;
+    --foreground: 210 40% 98%;
+
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 225 83% 5%;
+    --primary-foreground: 0 0% 98%;
+
+    --secondary: 222 38% 15%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 222 34% 17%;
+    --muted-foreground: 215 20% 68%;
+
+    --accent: 158 60% 16%;
+    --accent-foreground: 158 96% 64%;
+
+    --destructive: 0 72% 56%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 31% 20%;
+    --input: 220 31% 20%;
+    --ring: 158 96% 42%;
+
+    --football: 158 96% 45%;
+    --football-light: 158 52% 15%;
+    --football-foreground: 225 83% 5%;
+
+    --basketball: 166 82% 43%;
+    --basketball-light: 166 46% 15%;
+    --basketball-foreground: 225 83% 5%;
+
+    --sport-active: var(--football);
+    --sport-active-light: var(--football-light);
+    --sport-active-foreground: var(--football-foreground);
+
+    --sidebar-background: 225 83% 5%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 158 96% 45%;
+    --sidebar-primary-foreground: 225 83% 5%;
+    --sidebar-accent: 224 54% 12%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 224 40% 17%;
+    --sidebar-ring: 158 96% 45%;
   }
 
   .sport-basketball {
@@ -84,6 +135,11 @@
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-body);
+    color-scheme: light;
+  }
+
+  .dark body {
+    color-scheme: dark;
   }
 
   h1, h2, h3, h4, h5, h6 {

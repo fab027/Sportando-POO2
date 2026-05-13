@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth, SportProfile } from "@/contexts/AuthContext";
 import { Loader2 } from "lucide-react";
+import BrandLogo from "@/components/BrandLogo";
+import ThemeToggle from "@/components/ThemeToggle";
 
 const RegisterPage = () => {
   const [nome, setNome] = useState("");
@@ -35,12 +37,11 @@ const RegisterPage = () => {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="w-full max-w-md space-y-8">
+    <div className="flex min-h-screen items-center justify-center bg-primary px-4 py-8">
+      <ThemeToggle className="fixed right-4 top-4 !border-white/10 !bg-white/10 !text-white hover:!bg-white/[0.15]" />
+      <div className="w-full max-w-md space-y-8 rounded-2xl border border-white/10 bg-background px-6 py-8 shadow-2xl shadow-black/30">
         <div className="text-center">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground font-display font-bold text-xl">
-            S
-          </div>
+          <BrandLogo className="mx-auto h-16 w-16" />
           <h1 className="mt-4 font-display text-2xl font-bold text-foreground">Criar Conta</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Escolha o esporte que deseja acompanhar — sua conta ficará dedicada a ele.
@@ -119,7 +120,7 @@ const RegisterPage = () => {
           <button
             type="submit"
             disabled={loading}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-60"
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-sport px-4 py-2.5 text-sm font-semibold text-sport-foreground hover:opacity-90 transition-opacity disabled:opacity-60"
           >
             {loading && <Loader2 className="h-4 w-4 animate-spin" />}
             Cadastrar

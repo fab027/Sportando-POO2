@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SportProvider } from "@/contexts/SportContext";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { FavoritesProvider } from "@/contexts/FavoritesContext";
+import { ThemeProvider } from "@/contexts/ThemeContext";
 import AppLayout from "@/components/AppLayout";
 import Dashboard from "@/pages/Dashboard";
 import TeamsPage from "@/pages/TeamsPage";
@@ -23,30 +24,32 @@ const queryClient = new QueryClient();
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
-      <BrowserRouter>
-        <AuthProvider>
-          <SportProvider>
-            <FavoritesProvider>
-              <Toaster />
-              <Sonner />
-              <Routes>
-                <Route element={<AppLayout />}>
-                  <Route path="/" element={<Dashboard />} />
-                  <Route path="/equipes" element={<TeamsPage />} />
-                  <Route path="/atletas" element={<AthletesPage />} />
-                  <Route path="/partidas" element={<MatchesPage />} />
-                  <Route path="/previsoes" element={<PredictionsPage />} />
-                  <Route path="/favoritos" element={<FavoritesPage />} />
-                  <Route path="/agregador" element={<DataAggregatorPage />} />
-                </Route>
-                <Route path="/login" element={<LoginPage />} />
-                <Route path="/registro" element={<RegisterPage />} />
-                <Route path="*" element={<NotFound />} />
-              </Routes>
-            </FavoritesProvider>
-          </SportProvider>
-        </AuthProvider>
-      </BrowserRouter>
+      <ThemeProvider>
+        <BrowserRouter>
+          <AuthProvider>
+            <SportProvider>
+              <FavoritesProvider>
+                <Toaster />
+                <Sonner />
+                <Routes>
+                  <Route element={<AppLayout />}>
+                    <Route path="/" element={<Dashboard />} />
+                    <Route path="/equipes" element={<TeamsPage />} />
+                    <Route path="/atletas" element={<AthletesPage />} />
+                    <Route path="/partidas" element={<MatchesPage />} />
+                    <Route path="/previsoes" element={<PredictionsPage />} />
+                    <Route path="/favoritos" element={<FavoritesPage />} />
+                    <Route path="/agregador" element={<DataAggregatorPage />} />
+                  </Route>
+                  <Route path="/login" element={<LoginPage />} />
+                  <Route path="/registro" element={<RegisterPage />} />
+                  <Route path="*" element={<NotFound />} />
+                </Routes>
+              </FavoritesProvider>
+            </SportProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </ThemeProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );

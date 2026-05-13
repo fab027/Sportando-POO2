@@ -20,6 +20,15 @@ const PlayerCard = ({
   const { sport } = useSport();
   const esporte: "football" | "basketball" = sport === "basketball" ? "basketball" : "football";
   const fav = isFavorite("atleta", playerUrl);
+  const totals = player.seasons.reduce(
+    (acc, season) => ({
+      matches: acc.matches + season.matchesPlayed,
+      minutes: acc.minutes + season.minutes,
+      goals: acc.goals + season.goals,
+      assists: acc.assists + season.assists,
+    }),
+    { matches: 0, minutes: 0, goals: 0, assists: 0 }
+  );
 
   const getRatingColor = (r: number) => {
     if (r >= 7.5) return "bg-green-600 text-white";
@@ -75,47 +84,75 @@ const PlayerCard = ({
         </div>
       </div>
 
-      {player.seasons && player.seasons.length > 0 && (
-        <div className="rounded-xl border border-border bg-card">
-          <div className="border-b border-border px-6 py-4">
-            <h3 className="font-display text-sm font-semibold text-foreground">Estatísticas por Temporada</h3>
+      {player.seasons && player.seasons.length > 0 ? (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-4">
+            {[
+              ["Partidas", totals.matches],
+              ["Gols", totals.goals],
+              ["Assistências", totals.assists],
+              ["Minutos", totals.minutes.toLocaleString("pt-BR")],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl border border-border bg-card p-4">
+                <p className="text-xs font-medium uppercase text-muted-foreground">{label}</p>
+                <p className="mt-1 font-display text-2xl font-bold text-foreground">{value}</p>
+              </div>
+            ))}
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-secondary/50">
-                  <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Ano</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Time</th>
-                  <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">MP</th>
-                  <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">MIN</th>
-                  <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">GLS</th>
-                  <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">AST</th>
-                  <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">ASR</th>
-                </tr>
-              </thead>
-              <tbody>
-                {player.seasons.map((s, i) => (
-                  <tr key={i} className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
-                    <td className="px-4 py-3 font-medium text-foreground">{s.season}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{s.team}</td>
-                    <td className="px-4 py-3 text-center text-foreground">{s.matchesPlayed}</td>
-                    <td className="px-4 py-3 text-center text-muted-foreground">{s.minutes}</td>
-                    <td className="px-4 py-3 text-center font-semibold text-foreground">{s.goals}</td>
-                    <td className="px-4 py-3 text-center text-foreground">{s.assists}</td>
-                    <td className="px-4 py-3 text-center">
-                      {s.rating > 0 ? (
-                        <span className={`inline-flex items-center justify-center rounded-md px-2 py-0.5 text-xs font-bold ${getRatingColor(s.rating)}`}>
-                          {s.rating.toFixed(2)}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
+
+          <div className="rounded-xl border border-border bg-card">
+            <div className="border-b border-border px-6 py-4">
+              <h3 className="font-display text-sm font-semibold text-foreground">Estatísticas por temporada e competição</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-secondary/50">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Temporada</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Competição</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Time</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">JOG</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">TIT</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">MIN</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">GOL</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">AST</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">xG</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">xA</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">Nota</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {player.seasons.map((s, i) => (
+                    <tr key={i} className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
+                      <td className="px-4 py-3 font-medium text-foreground">{s.season}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{s.tournament || "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{s.team || "—"}</td>
+                      <td className="px-4 py-3 text-center text-foreground">{s.matchesPlayed}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{s.starts ?? "—"}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{s.minutes}</td>
+                      <td className="px-4 py-3 text-center font-semibold text-foreground">{s.goals}</td>
+                      <td className="px-4 py-3 text-center text-foreground">{s.assists}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{s.expectedGoals ? s.expectedGoals.toFixed(2) : "—"}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{s.expectedAssists ? s.expectedAssists.toFixed(2) : "—"}</td>
+                      <td className="px-4 py-3 text-center">
+                        {s.rating > 0 ? (
+                          <span className={`inline-flex items-center justify-center rounded-md px-2 py-0.5 text-xs font-bold ${getRatingColor(s.rating)}`}>
+                            {s.rating.toFixed(2)}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">
+          O SofaScore não retornou estatísticas de temporada para este atleta no momento.
         </div>
       )}
     </div>

@@ -181,7 +181,7 @@ export function usePlayerSearch() {
     }
     setStatus("loading");
     try {
-      const res = await cached(`player_search_v3_${query}`, () =>
+      const res = await cached(`player_search_v8_${query}`, () =>
         sofaScoreService.searchPlayer(query)
       );
       setResults(Array.isArray(res) && res.length > 0 ? res : getFallbackPlayerSearch(query));
@@ -206,7 +206,7 @@ export function usePlayerStats(playerUrl: string | null) {
       return;
     }
     setStatus("loading");
-    cached(`player_${playerUrl}`, () => sofaScoreService.getPlayerStats(playerUrl))
+    cached(`player_stats_v4_${playerUrl}`, () => sofaScoreService.getPlayerStats(playerUrl))
       .then((res) => {
         setData(res ?? getFallbackPlayerDetail(playerUrl));
         setStatus("success");

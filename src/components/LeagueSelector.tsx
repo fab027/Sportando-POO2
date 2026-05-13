@@ -22,13 +22,13 @@ const LeagueSelector = () => {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm font-medium text-foreground hover:bg-secondary transition-colors"
+        className="flex w-full items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.08] px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-white/[0.12]"
       >
         <span className="flex items-center gap-2 truncate">
           <span>{league.flag}</span>
           <span className="truncate">{league.name}</span>
         </span>
-        <ChevronDown className={`h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown className={`h-3.5 w-3.5 text-white/55 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (

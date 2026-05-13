@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, no-useless-escape */
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
@@ -252,6 +253,230 @@ const squadSchema = {
   },
 };
 
+const SOFASCORE_BASE_URL = "https://www.sofascore.com/api/v1";
+const TOP_FOOTBALL_UNIQUE_TOURNAMENTS = new Set([17, 8, 23, 35, 34, 325, 390, 373, 384, 480]);
+
+const sofaFetch = async (path: string): Promise<any> => {
+  const res = await fetch(`${SOFASCORE_BASE_URL}${path}`, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+      Referer: "https://www.sofascore.com/",
+    },
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`SofaScore ${res.status}: ${text.slice(0, 160)}`);
+  }
+
+  return res.json();
+};
+
+const uniqueTournamentIdFromUrl = (leagueUrl: string): number => {
+  const match = leagueUrl.match(/\/(\d+)(?:[/?#].*)?$/);
+  if (!match) throw new Error("Could not read SofaScore tournament id from leagueUrl");
+  return Number(match[1]);
+};
+
+const getCurrentSeasonId = async (uniqueTournamentId: number): Promise<number> => {
+  const data = await sofaFetch(`/unique-tournament/${uniqueTournamentId}/seasons`);
+  const seasons = Array.isArray(data?.seasons) ? data.seasons : [];
+  if (!seasons.length) throw new Error(`No seasons found for tournament ${uniqueTournamentId}`);
+  return Number(seasons[0].id);
+};
+
+const normalizeEventStatus = (event: any): string => {
+  const type = event?.status?.type;
+  if (type === "finished") return "Finished";
+  if (type === "inprogress") return "Live";
+  if (type === "notstarted") return "Scheduled";
+  return event?.status?.description || "Scheduled";
+};
+
+const mapSofaEvent = (event: any) => ({
+  id: event.id,
+  homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
+  awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
+  homeScore:
+    typeof event.homeScore?.current === "number" ? event.homeScore.current : null,
+  awayScore:
+    typeof event.awayScore?.current === "number" ? event.awayScore.current : null,
+  status: normalizeEventStatus(event),
+  startTimestamp: event.startTimestamp || 0,
+  tournament:
+    event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
+  roundInfo:
+    typeof event.roundInfo?.round === "number" ? event.roundInfo.round : null,
+});
+
+const getLiveMinute = (event: any): string | null => {
+  const description = String(event?.status?.description || "").toLowerCase();
+  if (description.includes("half")) return "HT";
+
+  const time = event?.statusTime || event?.time;
+  const timestamp = Number(time?.timestamp || time?.currentPeriodStartTimestamp || 0);
+  const initial = Number(time?.initial || 0);
+  const max = Number(time?.max || 0);
+  if (!timestamp) return event?.status?.description || null;
+
+  const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timestamp);
+  const total = initial + elapsed;
+  const minute = Math.max(1, Math.floor(total / 60) + 1);
+  const normalMinute = max ? Math.floor(max / 60) : 90;
+  if (max && total > max) return `${normalMinute}+${Math.floor((total - max) / 60) + 1}'`;
+  return `${minute}'`;
+};
+
+const mapSofaLiveEvent = (event: any) => ({
+  id: event.id,
+  homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
+  awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
+  homeScore: event.homeScore?.current ?? 0,
+  awayScore: event.awayScore?.current ?? 0,
+  status: "Live",
+  minute: getLiveMinute(event),
+  tournament:
+    event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
+});
+
+const todayLocalIso = () =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+
+const mapPosition = (position?: string) => {
+  const p = String(position || "").toUpperCase();
+  if (p === "G") return "Goalkeeper";
+  if (p === "D") return "Defender";
+  if (p === "M") return "Midfielder";
+  if (p === "F") return "Forward";
+  return position || "";
+};
+
+const playerUrl = (player: any) =>
+  player?.slug && player?.id
+    ? `https://www.sofascore.com/player/${player.slug}/${player.id}`
+    : "";
+
+const extractPlayerId = (url: string): number | null => {
+  const match = url.match(/\/player\/[^/]+\/(\d+)/i) || url.match(/\/(\d+)(?:[/?#].*)?$/);
+  return match ? Number(match[1]) : null;
+};
+
+const normalizeText = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+
+const playerAge = (player: any) =>
+  player?.dateOfBirthTimestamp
+    ? Math.floor((Date.now() - player.dateOfBirthTimestamp * 1000) / (365.25 * 24 * 60 * 60 * 1000))
+    : null;
+
+const isMaleFootballPlayer = (player: any) =>
+  player?.id &&
+  (player?.sport?.slug === "football" || player?.team?.sport?.slug === "football") &&
+  player?.gender !== "F" &&
+  player?.team?.gender !== "F";
+
+const searchPlayerScore = (player: any, query: string) => {
+  const q = normalizeText(query);
+  const name = normalizeText(player.name || player.shortName || "");
+  let score = Number(player.userCount || 0);
+  if (name === q) score += 100000;
+  else if (name.startsWith(q)) score += 50000;
+  else if (name.includes(q)) score += 20000;
+  for (const token of q.split(/\s+/).filter(Boolean)) {
+    if (name.includes(token)) score += 5000;
+  }
+  if (player.team?.name) score += 500;
+  return score;
+};
+
+const extractPlayersFromSearch = (data: any, query: string) => {
+  const items = Array.isArray(data?.results) ? data.results : [];
+  return items
+    .map((item: any) => (item?.type === "player" ? item.entity : item?.entity || item?.player || item))
+    .filter(isMaleFootballPlayer)
+    .filter((player: any) => playerUrl(player))
+    .map((player: any) => ({ player, score: searchPlayerScore(player, query) }));
+};
+
+const playerSeasonPairs = (seasonsData: any, limit = 12) => {
+  const groups = Array.isArray(seasonsData?.uniqueTournamentSeasons)
+    ? seasonsData.uniqueTournamentSeasons
+    : [];
+  const seen = new Set<string>();
+  const pairs: { uniqueTournament: any; season: any }[] = [];
+
+  for (const group of groups) {
+    const uniqueTournament = group?.uniqueTournament;
+    const seasons = Array.isArray(group?.seasons) ? group.seasons : group?.season ? [group.season] : [];
+    for (const season of seasons.slice(0, 3)) {
+      if (!uniqueTournament?.id || !season?.id) continue;
+      const key = `${uniqueTournament.id}:${season.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push({ uniqueTournament, season });
+      if (pairs.length >= limit) return pairs;
+    }
+  }
+
+  return pairs;
+};
+
+const mapSeasonStats = (statsData: any, pair: { uniqueTournament: any; season: any }, player: any) => {
+  const stats = statsData?.statistics;
+  if (!stats) return null;
+  return {
+    season: pair.season?.year || pair.season?.name || "",
+    tournament: pair.uniqueTournament?.name || "",
+    team: statsData?.team?.name || player.team?.name || "",
+    matchesPlayed: Number(stats.appearances ?? stats.matchesStarted ?? stats.countRating ?? 0),
+    starts: Number(stats.matchesStarted ?? 0),
+    minutes: Number(stats.minutesPlayed ?? 0),
+    goals: Number(stats.goals ?? 0),
+    assists: Number(stats.assists ?? 0),
+    rating: Number(stats.rating ?? 0),
+    yellowCards: Number(stats.yellowCards ?? 0),
+    redCards: Number(stats.redCards ?? 0),
+    shotsOnTarget: Number(stats.shotsOnTarget ?? 0),
+    totalShots: Number(stats.totalShots ?? 0),
+    keyPasses: Number(stats.keyPasses ?? 0),
+    passAccuracy: Number(stats.accuratePassesPercentage ?? 0),
+    expectedGoals: Number(stats.expectedGoals ?? 0),
+    expectedAssists: Number(stats.expectedAssists ?? 0),
+  };
+};
+
+const getPlayerSeasons = async (playerId: number, player: any) => {
+  const seasonsData = await sofaFetch(`/player/${playerId}/statistics/seasons`).catch(() => ({
+    uniqueTournamentSeasons: [],
+  }));
+  const pairs = playerSeasonPairs(seasonsData);
+  const settled = await Promise.allSettled(
+    pairs.map(async (pair) => {
+      const statsData = await sofaFetch(
+        `/player/${playerId}/unique-tournament/${pair.uniqueTournament.id}/season/${pair.season.id}/statistics/overall`
+      );
+      return mapSeasonStats(statsData, pair, player);
+    })
+  );
+
+  return settled
+    .filter((entry): entry is PromiseFulfilledResult<any> => entry.status === "fulfilled")
+    .map((entry) => entry.value)
+    .filter(Boolean)
+    .filter((season: any) => season.matchesPlayed > 0 || season.minutes > 0 || season.goals > 0 || season.assists > 0);
+};
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -266,31 +491,52 @@ serve(async (req) => {
       const { leagueUrl } = body;
       if (!leagueUrl) throw new Error("leagueUrl required");
 
-      const data = await scrapeExtract(
-        leagueUrl,
-        `Extract the complete league standings table. For each team: position number, full team name, short name/abbreviation, games played (J/GP), wins (V/W), draws (E/D), losses (D/L), goals or points scored (GP/GF), goals or points conceded (GC/GA), total points (Pts/P).`,
-        standingsSchema
+      const tournamentId = uniqueTournamentIdFromUrl(leagueUrl);
+      const seasonId = await getCurrentSeasonId(tournamentId);
+      const data = await sofaFetch(
+        `/unique-tournament/${tournamentId}/season/${seasonId}/standings/total`
       );
+      const rows = data?.standings?.[0]?.rows || [];
 
       result = {
-        teams: (data?.teams || []).map((t: any, i: number) => ({
-          position: t.position || i + 1,
-          id: i + 1000,
-          name: t.name || "Unknown",
-          shortName: t.shortName || (t.name || "UNK").substring(0, 3).toUpperCase(),
-          played: t.played || 0,
-          wins: t.wins || 0,
-          draws: t.draws || 0,
-          losses: t.losses || 0,
-          scored: t.scored || 0,
-          conceded: t.conceded || 0,
-          points: t.points || 0,
+        teams: rows.map((row: any, i: number) => ({
+          position: row.position || i + 1,
+          id: row.team?.id || row.id || i + 1000,
+          name: row.team?.name || "Unknown",
+          shortName:
+            row.team?.shortName ||
+            row.team?.nameCode ||
+            (row.team?.name || "UNK").substring(0, 3).toUpperCase(),
+          played: row.matches || 0,
+          wins: row.wins || 0,
+          draws: row.draws || 0,
+          losses: row.losses || 0,
+          scored: row.scoresFor || 0,
+          conceded: row.scoresAgainst || 0,
+          points: row.points || 0,
         })),
       };
     } else if (action === "matches_last" || action === "matches_next") {
       const { leagueUrl } = body;
       if (!leagueUrl) throw new Error("leagueUrl required");
       const isLast = action === "matches_last";
+
+      const tournamentId = uniqueTournamentIdFromUrl(leagueUrl);
+      const seasonId = await getCurrentSeasonId(tournamentId);
+      const endpoint = isLast ? "last" : "next";
+      const data = await sofaFetch(
+        `/unique-tournament/${tournamentId}/season/${seasonId}/events/${endpoint}/0`
+      );
+      const events = Array.isArray(data?.events) ? data.events : [];
+      result = events
+        .map(mapSofaEvent)
+        .sort((a: any, b: any) =>
+          isLast ? b.startTimestamp - a.startTimestamp : a.startTimestamp - b.startTimestamp
+        );
+
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
 
       // Map SofaScore league URL to a placardefutebol slug (page contains both past + upcoming matches)
       const leagueSlug = (() => {
@@ -369,6 +615,19 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
         result = filtered;
       }
     } else if (action === "live") {
+      const data = await sofaFetch("/sport/football/events/live");
+      const events = Array.isArray(data?.events) ? data.events : [];
+      result = events
+        .filter((event: any) => event?.status?.type === "inprogress")
+        .filter((event: any) =>
+          TOP_FOOTBALL_UNIQUE_TOURNAMENTS.has(event?.tournament?.uniqueTournament?.id)
+        )
+        .map(mapSofaLiveEvent);
+
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+
       try {
         const liveRules = `CRITICAL RULES:
 - ONLY include matches that are CURRENTLY in progress RIGHT NOW.
@@ -435,6 +694,39 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
         result = [];
       }
     } else if (action === "today_matches") {
+      const date = todayLocalIso();
+      const data = await sofaFetch(`/sport/football/scheduled-events/${date}`);
+      const events = Array.isArray(data?.events) ? data.events : [];
+      result = events
+        .filter((event: any) =>
+          TOP_FOOTBALL_UNIQUE_TOURNAMENTS.has(event?.tournament?.uniqueTournament?.id)
+        )
+        .sort((a: any, b: any) => (a.startTimestamp || 0) - (b.startTimestamp || 0))
+        .map((event: any) => {
+          const mapped = mapSofaEvent(event);
+          return {
+            id: mapped.id,
+            homeTeam: mapped.homeTeam,
+            awayTeam: mapped.awayTeam,
+            homeScore: mapped.homeScore,
+            awayScore: mapped.awayScore,
+            status: mapped.status,
+            time:
+              mapped.status === "Live"
+                ? getLiveMinute(event)
+                : new Date(mapped.startTimestamp * 1000).toLocaleTimeString("pt-BR", {
+                    timeZone: "America/Sao_Paulo",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }),
+            tournament: mapped.tournament,
+          };
+        });
+
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+
       try {
         const data = await scrapeExtract(
           "https://www.placardefutebol.com.br/jogos-de-hoje",
@@ -463,6 +755,39 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
     } else if (action === "player_search") {
       const { query } = body;
       if (!query) throw new Error("query required");
+
+      const [playersData, allData] = await Promise.all([
+        sofaFetch(`/search/players?q=${encodeURIComponent(query)}&page=0`).catch(() => ({ results: [] })),
+        sofaFetch(`/search/all?q=${encodeURIComponent(query)}&page=0`).catch(() => ({ results: [] })),
+      ]);
+      const byId = new Map<number, { player: any; score: number }>();
+      for (const item of [...extractPlayersFromSearch(playersData, query), ...extractPlayersFromSearch(allData, query)]) {
+        const current = byId.get(item.player.id);
+        if (!current || item.score > current.score) byId.set(item.player.id, item);
+      }
+
+      result = [...byId.values()]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 12)
+        .map(({ player }) => ({
+        id: player.id,
+        name: player.name || player.shortName || query,
+        url: playerUrl(player),
+        description: [
+          mapPosition(player.position),
+          player.team?.name,
+          player.country?.name,
+        ]
+          .filter(Boolean)
+          .join(" • "),
+        imageUrl: `https://api.sofascore.app/api/v1/player/${player.id}/image`,
+        team: player.team?.name || "",
+        age: playerAge(player),
+      }));
+
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
 
       // Two-pass search: strict path filter first, broader fallback if empty
       const queries = [
@@ -673,6 +998,29 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
       const { playerUrl } = body;
       if (!playerUrl) throw new Error("playerUrl required");
 
+      const playerId = extractPlayerId(String(playerUrl));
+      if (!playerId) throw new Error("Invalid playerUrl");
+
+      const detail = await sofaFetch(`/player/${playerId}`);
+      const player = detail?.player || {};
+      const seasons = await getPlayerSeasons(playerId, player);
+
+      result = {
+        name: player.name || player.shortName || "",
+        team: player.team?.name || "",
+        position: mapPosition(player.position),
+        nationality: player.country?.name || "",
+        age: playerAge(player),
+        height: player.height ? `${player.height} cm` : "",
+        foot: player.preferredFoot || "",
+        shirtNumber: player.jerseyNumber ? Number(player.jerseyNumber) : null,
+        seasons,
+      };
+
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+
       const data = await scrapeExtract(
         playerUrl,
         `Extract all player information and statistics. Get: player full name, current team, position, nationality, age, height, preferred foot, shirt number. Also extract the complete season-by-season statistics table with: season year (e.g. "24/25"), team name, matches played (MP), minutes played (MIN), goals scored (GLS), assists (AST), and average SofaScore rating (ASR). Include ALL available seasons from the table.`,
@@ -751,6 +1099,35 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
     } else if (action === "team_players") {
       const { teamName } = body;
       if (!teamName) throw new Error("teamName required");
+
+      const searchData = await sofaFetch(`/search/teams?q=${encodeURIComponent(teamName)}&page=0`);
+      const team = (Array.isArray(searchData?.results) ? searchData.results : [])
+        .map((item: any) => item.entity)
+        .find((entity: any) => entity?.sport?.slug === "football" && entity?.gender !== "F");
+      if (!team?.id) {
+        result = [];
+      } else {
+        const playersData = await sofaFetch(`/team/${team.id}/players`);
+        const players = Array.isArray(playersData?.players) ? playersData.players : [];
+        result = players.map((row: any) => {
+          const player = row.player || row;
+          return {
+            id: player.id,
+            name: player.name || player.shortName || "",
+            position: mapPosition(player.position),
+            shirtNumber: player.jerseyNumber ? Number(player.jerseyNumber) : null,
+            nationality: player.country?.name || "",
+            age: player.dateOfBirthTimestamp
+              ? Math.floor((Date.now() - player.dateOfBirthTimestamp * 1000) / (365.25 * 24 * 60 * 60 * 1000))
+              : null,
+            url: playerUrl(player),
+          };
+        });
+      }
+
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
 
       console.log(`Looking for team: ${teamName}`);
       // Source: Transfermarkt — its squad page is server-rendered (markdown is rich and stable),

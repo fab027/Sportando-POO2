@@ -24,7 +24,7 @@ interface DynamicDashboardProps {
 
 const DynamicDashboard = ({ data }: DynamicDashboardProps) => {
   const chartData = data.labels.map((label, i) => {
-    const point: any = { name: label };
+    const point: Record<string, string | number> = { name: label };
     data.datasets.forEach(ds => {
       point[ds.nome] = ds.dados[i] ?? 0;
     });
