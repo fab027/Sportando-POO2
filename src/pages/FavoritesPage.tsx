@@ -3,10 +3,12 @@ import { useFavorites } from "@/contexts/FavoritesContext";
 import { useSport } from "@/contexts/SportContext";
 import { Star, Trash2 } from "lucide-react";
 import FilterBar, { FilterDef } from "@/components/FilterBar";
+import { useNavigate } from "react-router-dom";
 
 const FavoritesPage = () => {
   const { favorites, toggleFavorite } = useFavorites();
   const { sport, sportLabel } = useSport();
+  const navigate = useNavigate();
   const [filters, setFilters] = useState<Record<string, string>>({ tipo: "all" });
 
   const filterDefs: FilterDef[] = [
@@ -58,7 +60,14 @@ const FavoritesPage = () => {
           {visible.map((fav) => (
             <div
               key={`${fav.tipo}-${fav.referenciaId}`}
-              className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3"
+              onClick={() =>
+                navigate(
+                  fav.tipo === "atleta"
+                    ? `/atletas?player=${encodeURIComponent(fav.referenciaId)}`
+                    : `/atletas?team=${encodeURIComponent(fav.nome)}`
+                )
+              }
+              className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-secondary/40"
             >
               <div className="flex items-center gap-3">
                 <Star className="h-4 w-4 fill-sport text-sport" />
@@ -68,7 +77,10 @@ const FavoritesPage = () => {
                 </div>
               </div>
               <button
-                onClick={() => toggleFavorite(fav)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleFavorite(fav);
+                }}
                 className="text-muted-foreground hover:text-destructive transition-colors"
                 aria-label="Remover favorito"
               >

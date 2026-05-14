@@ -30,6 +30,46 @@ export default defineConfig(({ mode }) => ({
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
         },
       },
+      "/rsshub": {
+        target: "https://rsshub.app",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/rsshub/, ""),
+        headers: {
+          Accept: "application/rss+xml,text/xml",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+        },
+      },
+      "/nitter-api": {
+        target: "https://nitter.net",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/nitter-api/, ""),
+        headers: {
+          Accept: "application/rss+xml,text/xml",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+        },
+      },
+      "/xcancel-api": {
+        target: "https://xcancel.com",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/xcancel-api/, ""),
+        headers: {
+          Accept: "application/rss+xml,text/xml",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+        },
+      },
+      "/rss-xcancel": {
+        target: "https://rss.xcancel.com",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/rss-xcancel/, ""),
+        headers: {
+          Accept: "application/rss+xml,text/xml",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+        },
+      },
     },
     hmr: {
       overlay: false,

@@ -6,6 +6,10 @@ const SOFASCORE_PROXY_URL = "/sofascore-api";
 const SPORTS_DATA_TIMEOUT_MS = 4000;
 
 const TOP_FOOTBALL_TOURNAMENTS = new Set([17, 8, 23, 35, 34, 325, 390, 373, 384, 480]);
+const teamImageUrl = (teamId?: number | null) =>
+  teamId ? `https://api.sofascore.app/api/v1/team/${teamId}/image` : null;
+const playerImageUrl = (playerId?: number | null) =>
+  playerId ? `https://api.sofascore.app/api/v1/player/${playerId}/image` : null;
 
 async function sofaFetch(path: string) {
   const res = await fetch(`${SOFASCORE_PROXY_URL}${path}`, {
@@ -38,8 +42,12 @@ function normalizeStatus(event: any) {
 function mapEvent(event: any): SofaMatch {
   return {
     id: event.id,
+    homeTeamId: event.homeTeam?.id || null,
+    awayTeamId: event.awayTeam?.id || null,
     homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
     awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
+    homeTeamImageUrl: teamImageUrl(event.homeTeam?.id),
+    awayTeamImageUrl: teamImageUrl(event.awayTeam?.id),
     homeScore: typeof event.homeScore?.current === "number" ? event.homeScore.current : null,
     awayScore: typeof event.awayScore?.current === "number" ? event.awayScore.current : null,
     status: normalizeStatus(event),
@@ -48,23 +56,33 @@ function mapEvent(event: any): SofaMatch {
     tournamentId: event.tournament?.uniqueTournament?.id || null,
     roundInfo: typeof event.roundInfo?.round === "number" ? event.roundInfo.round : null,
     roundName: event.roundInfo?.name || event.roundInfo?.slug || null,
+    venue: event.venue?.stadium?.name || event.venue?.name || event.venue?.city?.name || null,
   };
 }
 
-function getLiveMinute(event: any) {
+function getLiveClock(event: any) {
   const description = String(event?.status?.description || "").toLowerCase();
-  if (description.includes("half")) return "HT";
+  if (description.includes("half")) return { minute: "Intervalo", period: "Intervalo" };
   const time = event?.statusTime || event?.time;
   const timestamp = Number(time?.timestamp || time?.currentPeriodStartTimestamp || 0);
   const initial = Number(time?.initial || 0);
   const max = Number(time?.max || 0);
-  if (!timestamp) return event?.status?.description || null;
+  const periodNumber = Number(time?.period || event?.statusTime?.period || 0);
+  const period =
+    periodNumber === 2 || initial >= 45 * 60
+      ? "2o tempo"
+      : periodNumber === 1 || event?.status?.type === "inprogress"
+        ? "1o tempo"
+        : event?.status?.description || null;
+  if (!timestamp) return { minute: event?.status?.description || null, period };
   const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timestamp);
   const total = initial + elapsed;
   const minute = Math.max(1, Math.floor(total / 60) + 1);
   const normalMinute = max ? Math.floor(max / 60) : 90;
-  if (max && total > max) return `${normalMinute}+${Math.floor((total - max) / 60) + 1}'`;
-  return `${minute}'`;
+  return {
+    minute: max && total > max ? `${normalMinute}+${Math.floor((total - max) / 60) + 1}'` : `${minute}'`,
+    period,
+  };
 }
 
 function eventCountry(event: any) {
@@ -78,10 +96,36 @@ function eventCountry(event: any) {
 
 const mapPosition = (position?: string) => {
   const p = String(position || "").toUpperCase();
-  if (p === "G") return "Goalkeeper";
-  if (p === "D") return "Defender";
-  if (p === "M") return "Midfielder";
-  if (p === "F") return "Forward";
+  const positions: Record<string, string> = {
+    G: "Goleiro",
+    GK: "Goleiro",
+    D: "Defensor",
+    CB: "Zagueiro",
+    DC: "Zagueiro",
+    LB: "Lateral Esquerdo",
+    LE: "Lateral Esquerdo",
+    RB: "Lateral Direito",
+    LD: "Lateral Direito",
+    LWB: "Ala Esquerdo",
+    RWB: "Ala Direito",
+    M: "Meio-campista",
+    DM: "Volante",
+    CDM: "Volante",
+    CM: "Meia Central",
+    AM: "Meia Ofensivo",
+    CAM: "Meia Ofensivo",
+    LM: "Meia Esquerdo",
+    RM: "Meia Direito",
+    F: "Atacante",
+    ST: "Centroavante",
+    CF: "Segundo Atacante",
+    LW: "Ponta Esquerda",
+    RW: "Ponta Direita",
+  };
+  if (positions[p]) return positions[p];
+  if (p === "DEFENDER") return "Defensor";
+  if (p === "MIDFIELDER") return "Meio-campista";
+  if (p === "ATTACKER" || p === "FORWARD") return "Atacante";
   return position || "";
 };
 
@@ -104,6 +148,13 @@ const playerAge = (player: any) =>
   player?.dateOfBirthTimestamp
     ? Math.floor((Date.now() - player.dateOfBirthTimestamp * 1000) / (365.25 * 24 * 60 * 60 * 1000))
     : null;
+
+const findFootballTeam = async (teamName: string) => {
+  const searchData = await sofaFetch(`/search/teams?q=${encodeURIComponent(teamName)}&page=0`);
+  return (Array.isArray(searchData?.results) ? searchData.results : [])
+    .map((item: any) => item.entity)
+    .find((entity: any) => entity?.sport?.slug === "football" && entity?.gender !== "F");
+};
 
 const isMaleFootballPlayer = (player: any) =>
   player?.id &&
@@ -167,6 +218,11 @@ const playerSeasonPairs = (seasonsData: any, limit = 12) => {
   return pairs;
 };
 
+const seasonSortValue = (season: string) => {
+  const years = season.match(/\d{2,4}/g)?.map((value) => Number(value.length === 2 ? `20${value}` : value)) || [];
+  return years.length ? Math.max(...years) : 0;
+};
+
 const mapSeasonStats = (statsData: any, pair: { uniqueTournament: any; season: any }, player: any): PlayerSeasonStats | null => {
   const stats = statsData?.statistics;
   if (!stats) return null;
@@ -179,6 +235,7 @@ const mapSeasonStats = (statsData: any, pair: { uniqueTournament: any; season: a
     season: pair.season?.year || pair.season?.name || "",
     tournament: pair.uniqueTournament?.name || "",
     team: statsData?.team?.name || player.team?.name || "",
+    teamImageUrl: teamImageUrl(statsData?.team?.id || player.team?.id),
     matchesPlayed,
     starts: Number(stats.matchesStarted ?? 0),
     minutes,
@@ -214,7 +271,8 @@ async function getPlayerSeasons(playerId: number, player: any) {
     .filter((entry): entry is PromiseFulfilledResult<PlayerSeasonStats | null> => entry.status === "fulfilled")
     .map((entry) => entry.value)
     .filter((season): season is PlayerSeasonStats => Boolean(season))
-    .filter((season) => season.matchesPlayed > 0 || season.minutes > 0 || season.goals > 0 || season.assists > 0);
+    .filter((season) => season.matchesPlayed > 0 || season.minutes > 0 || season.goals > 0 || season.assists > 0)
+    .sort((a, b) => seasonSortValue(b.season) - seasonSortValue(a.season));
 }
 
 function todayLocalIso() {
@@ -232,7 +290,8 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
   if (action === "standings") {
     const tournamentId = uniqueTournamentIdFromUrl(String(body.leagueUrl));
     const seasonId = await getCurrentSeasonId(tournamentId);
-    const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/standings/total`);
+    const tableType = ["total", "home", "away"].includes(String(body.tableType)) ? String(body.tableType) : "total";
+    const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/standings/${tableType}`);
     const standings = Array.isArray(data?.standings) ? data.standings : [];
     const rows = standings.flatMap((standing: any) => {
       const groupName = standing?.name || standing?.groupName || standing?.tournament?.name || null;
@@ -246,6 +305,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
         id: row.team?.id || row.id || i + 1000,
         name: row.team?.name || "Unknown",
         shortName: row.team?.shortName || row.team?.nameCode || (row.team?.name || "UNK").slice(0, 3),
+        imageUrl: teamImageUrl(row.team?.id || row.id),
         groupName,
         played: row.matches || 0,
         wins: row.wins || 0,
@@ -277,12 +337,16 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
       .filter((event: any) => TOP_FOOTBALL_TOURNAMENTS.has(event?.tournament?.uniqueTournament?.id))
       .map((event: any): SofaLiveMatch => ({
         id: event.id,
+        homeTeamId: event.homeTeam?.id || null,
+        awayTeamId: event.awayTeam?.id || null,
         homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
         awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
+        homeTeamImageUrl: teamImageUrl(event.homeTeam?.id),
+        awayTeamImageUrl: teamImageUrl(event.awayTeam?.id),
         homeScore: event.homeScore?.current ?? 0,
         awayScore: event.awayScore?.current ?? 0,
         status: "Live",
-        minute: getLiveMinute(event),
+        ...getLiveClock(event),
         tournament: event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
         tournamentId: event.tournament?.uniqueTournament?.id || null,
         country: eventCountry(event),
@@ -299,20 +363,25 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
         const mapped = mapEvent(event);
         return {
           id: mapped.id,
+          homeTeamId: mapped.homeTeamId,
+          awayTeamId: mapped.awayTeamId,
           homeTeam: mapped.homeTeam,
           awayTeam: mapped.awayTeam,
+          homeTeamImageUrl: mapped.homeTeamImageUrl,
+          awayTeamImageUrl: mapped.awayTeamImageUrl,
           homeScore: mapped.homeScore,
           awayScore: mapped.awayScore,
           status: mapped.status,
           time:
             mapped.status === "Live"
-              ? getLiveMinute(event)
+              ? getLiveClock(event).minute
               : new Date(mapped.startTimestamp * 1000).toLocaleTimeString("pt-BR", {
                   timeZone: "America/Sao_Paulo",
                   hour: "2-digit",
                   minute: "2-digit",
                 }),
           tournament: mapped.tournament,
+          venue: mapped.venue,
         };
       });
   }
@@ -327,6 +396,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
       id: item.player?.id || item.id,
       name: item.player?.shortName || item.player?.name || "Jogador",
       fullName: item.player?.name || item.player?.shortName || "Jogador",
+      imageUrl: playerImageUrl(item.player?.id || item.id),
       team: item.team?.shortName || item.team?.name || "",
       value: Number(item.statistics?.[metric] ?? 0),
       goals: Number(item.statistics?.goals ?? 0),
@@ -354,10 +424,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
   }
 
   if (action === "team_players") {
-    const searchData = await sofaFetch(`/search/teams?q=${encodeURIComponent(String(body.teamName))}&page=0`);
-    const team = (Array.isArray(searchData?.results) ? searchData.results : [])
-      .map((item: any) => item.entity)
-      .find((entity: any) => entity?.sport?.slug === "football" && entity?.gender !== "F");
+    const team = await findFootballTeam(String(body.teamName));
     if (!team?.id) return [];
     const playersData = await sofaFetch(`/team/${team.id}/players`);
     return (Array.isArray(playersData?.players) ? playersData.players : []).map((row: any): TeamPlayer => {
@@ -365,6 +432,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
       return {
         id: player.id,
         name: player.name || player.shortName || "",
+        imageUrl: playerImageUrl(player.id),
         position: mapPosition(player.position),
         shirtNumber: player.jerseyNumber ? Number(player.jerseyNumber) : null,
         nationality: player.country?.name || "",
@@ -374,6 +442,38 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
         url: playerUrl(player),
       };
     });
+  }
+
+  if (action === "team_next_matches") {
+    const teamIds = Array.isArray(body.teamIds)
+      ? body.teamIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+      : [];
+    const teamNames = Array.isArray(body.teamNames)
+      ? body.teamNames.map((name) => String(name).trim()).filter(Boolean)
+      : [];
+    const teamsByName = await Promise.allSettled(teamNames.map((name) => findFootballTeam(name)));
+    const resolvedIds = teamsByName
+      .filter((entry): entry is PromiseFulfilledResult<any> => entry.status === "fulfilled")
+      .map((entry) => Number(entry.value?.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    const uniqueTeamIds = Array.from(new Set([...teamIds, ...resolvedIds])).slice(0, 6);
+    if (uniqueTeamIds.length === 0) return [];
+
+    const settled = await Promise.allSettled(
+      uniqueTeamIds.map(async (teamId) => {
+        const data = await sofaFetch(`/team/${teamId}/events/next/0`);
+        return Array.isArray(data?.events) ? data.events.map(mapEvent) : [];
+      })
+    );
+    const byId = new Map<number, SofaMatch>();
+    settled.forEach((entry) => {
+      if (entry.status !== "fulfilled") return;
+      entry.value.forEach((match) => byId.set(match.id, match));
+    });
+    return Array.from(byId.values())
+      .filter((match) => match.startTimestamp > 0)
+      .sort((a, b) => a.startTimestamp - b.startTimestamp)
+      .slice(0, 20);
   }
 
   if (action === "player_stats") {
@@ -386,6 +486,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
       name: player.name || player.shortName || "",
       team: player.team?.name || "",
       position: mapPosition(player.position),
+      imageUrl: playerImageUrl(player.id),
       nationality: player.country?.name || "",
       age: playerAge(player),
       height: player.height ? `${player.height} cm` : "",
@@ -435,6 +536,7 @@ export type SofaTeamStanding = {
   id: number;
   name: string;
   shortName: string;
+  imageUrl?: string | null;
   groupName?: string | null;
   played: number;
   wins: number;
@@ -447,8 +549,12 @@ export type SofaTeamStanding = {
 
 export type SofaMatch = {
   id: number;
+  homeTeamId?: number | null;
+  awayTeamId?: number | null;
   homeTeam: string;
   awayTeam: string;
+  homeTeamImageUrl?: string | null;
+  awayTeamImageUrl?: string | null;
   homeScore: number | null;
   awayScore: number | null;
   status: string;
@@ -457,16 +563,22 @@ export type SofaMatch = {
   tournamentId?: number | null;
   roundInfo: number | null;
   roundName?: string | null;
+  venue?: string | null;
 };
 
 export type SofaLiveMatch = {
   id: number;
+  homeTeamId?: number | null;
+  awayTeamId?: number | null;
   homeTeam: string;
   awayTeam: string;
+  homeTeamImageUrl?: string | null;
+  awayTeamImageUrl?: string | null;
   homeScore: number;
   awayScore: number;
   status: string;
   minute: string | null;
+  period?: string | null;
   tournament: string;
   tournamentId?: number | null;
   country?: string;
@@ -477,6 +589,8 @@ export type SofaTopPlayer = {
   name: string;
   fullName: string;
   team: string;
+  teamImageUrl?: string | null;
+  imageUrl?: string | null;
   value: number;
   goals: number;
   assists: number;
@@ -486,13 +600,18 @@ export type SofaTopPlayer = {
 
 export type TodayMatch = {
   id: number;
+  homeTeamId?: number | null;
+  awayTeamId?: number | null;
   homeTeam: string;
   awayTeam: string;
+  homeTeamImageUrl?: string | null;
+  awayTeamImageUrl?: string | null;
   homeScore: number | null;
   awayScore: number | null;
   status: string;
   time: string | null;
   tournament: string;
+  venue?: string | null;
 };
 
 export type PlayerSearchResult = {
@@ -529,6 +648,7 @@ export type PlayerDetail = {
   name: string;
   team: string;
   position: string;
+  imageUrl?: string | null;
   nationality: string;
   age: number | null;
   height: string;
@@ -540,6 +660,7 @@ export type PlayerDetail = {
 export type TeamPlayer = {
   id: number;
   name: string;
+  imageUrl?: string | null;
   position: string;
   shirtNumber: number | null;
   nationality: string;
@@ -560,8 +681,8 @@ export type OddsMatch = {
 };
 
 export const sofaScoreService = {
-  async getStandings(leagueUrl: string): Promise<{ teams: SofaTeamStanding[] }> {
-    return callSportsData({ action: "standings", leagueUrl });
+  async getStandings(leagueUrl: string, tableType: "total" | "home" | "away" = "total"): Promise<{ teams: SofaTeamStanding[] }> {
+    return callSportsData({ action: "standings", leagueUrl, tableType });
   },
 
   async getLastMatches(leagueUrl: string): Promise<SofaMatch[]> {
@@ -598,5 +719,9 @@ export const sofaScoreService = {
 
   async getTeamPlayers(teamName: string): Promise<TeamPlayer[]> {
     return callSportsData({ action: "team_players", teamName });
+  },
+
+  async getTeamNextMatches(teamIds: string[], teamNames: string[] = []): Promise<SofaMatch[]> {
+    return callSportsData({ action: "team_next_matches", teamIds, teamNames });
   },
 };

@@ -37,7 +37,7 @@ function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
 type Status = "idle" | "loading" | "success" | "error";
 
 // ─── Standings ──────────────────────────────────────────────────────────────
-export function useStandings(leagueUrl: string) {
+export function useStandings(leagueUrl: string, tableType: "total" | "home" | "away" = "total") {
   const [data, setData] = useState<SofaTeamStanding[]>([]);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -45,8 +45,8 @@ export function useStandings(leagueUrl: string) {
   const fetchData = useCallback(async () => {
     setStatus("loading");
     try {
-      const res = await cached(`standings_${leagueUrl}`, () =>
-        sofaScoreService.getStandings(leagueUrl)
+      const res = await cached(`standings_${tableType}_${leagueUrl}`, () =>
+        sofaScoreService.getStandings(leagueUrl, tableType)
       );
       const teams = Array.isArray(res?.teams) ? res.teams : [];
       setData(teams.length > 0 ? teams : getFallbackStandings(leagueUrl));
@@ -56,7 +56,7 @@ export function useStandings(leagueUrl: string) {
       setError(e instanceof Error ? e.message : "Erro ao carregar classificação");
       setStatus("success");
     }
-  }, [leagueUrl]);
+  }, [leagueUrl, tableType]);
 
   useEffect(() => {
     fetchData();
@@ -139,8 +139,7 @@ export function useLiveMatches() {
 
   useEffect(() => {
     fetchData();
-    // Poll less aggressively (90s) to avoid stacking long Firecrawl scrape calls
-    const interval = setInterval(fetchData, 90_000);
+    const interval = setInterval(fetchData, 30_000);
     return () => clearInterval(interval);
   }, [fetchData]);
 

@@ -18,6 +18,7 @@ type NewsItem = {
   title: string;
   link: string;
   source: string;
+  sourceUrl?: string | null;
   publishedAt: string | null;
   description: string;
 };
@@ -28,8 +29,6 @@ const defaultSources: NewsSource[] = [
   { id: "ge", type: "site", name: "ge / Globo Esporte", value: "ge.globo.com", enabled: true },
   { id: "lance", type: "site", name: "Lance!", value: "lance.com.br", enabled: true },
   { id: "espn", type: "site", name: "ESPN Brasil", value: "espn.com.br", enabled: true },
-  { id: "fabrizio-x", type: "x", name: "Fabrizio Romano no X", value: "https://x.com/FabrizioRomano", enabled: true },
-  { id: "fabrizio-instagram", type: "instagram", name: "Fabrizio Romano no Instagram", value: "https://www.instagram.com/fabriziorom/", enabled: false },
 ];
 
 const sourceIcons = {
@@ -42,7 +41,8 @@ const sourceIcons = {
 const readSources = () => {
   try {
     const saved = JSON.parse(localStorage.getItem(NEWS_SOURCES_KEY) ?? "null") as NewsSource[] | null;
-    return saved?.length ? saved : defaultSources;
+    const migrated = saved?.filter((source) => !source.id.startsWith("fabrizio-"));
+    return migrated?.length ? migrated : defaultSources;
   } catch {
     return defaultSources;
   }
@@ -53,6 +53,12 @@ const writeSources = (sources: NewsSource[]) => {
 };
 
 const stripHtml = (value: string) => value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+
+const normalizeText = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 
 const formatDate = (value: string | null) => {
   if (!value) return "";
@@ -73,6 +79,25 @@ const normalizeDomain = (value: string) =>
     .split("/")[0]
     .trim();
 
+const getUrlDomain = (value: string | null | undefined) => {
+  if (!value) return "";
+  try {
+    return normalizeDomain(new URL(value).hostname);
+  } catch {
+    return normalizeDomain(value);
+  }
+};
+
+const socialHandle = (value: string) =>
+  value
+    .trim()
+    .replace(/^@/, "")
+    .replace(/^https?:\/\/(?:www\.)?/i, "")
+    .replace(/\/$/, "")
+    .replace(/^(x|twitter|instagram)\.com\//i, "")
+    .split(/[/?#]/)[0]
+    .toLowerCase();
+
 const socialLabel = (value: string) =>
   value
     .replace(/^https?:\/\/(?:www\.)?/i, "")
@@ -81,31 +106,124 @@ const socialLabel = (value: string) =>
     .replace(/^twitter\.com\//i, "@")
     .replace(/^instagram\.com\//i, "@");
 
-async function fetchGoogleNews(query: string, sourceName: string): Promise<NewsItem[]> {
+const sourceMatchesItem = (source: NewsSource, item: Pick<NewsItem, "link" | "source" | "sourceUrl">) => {
+  if (source.type === "rss") return true;
+  if (source.type === "site") {
+    const expectedDomain = normalizeDomain(source.value);
+    return getUrlDomain(item.sourceUrl).endsWith(expectedDomain) || getUrlDomain(item.link).endsWith(expectedDomain);
+  }
+
+  const expectedHandle = socialHandle(source.value);
+  const allowedDomains = source.type === "instagram" ? ["instagram.com"] : ["x.com", "twitter.com"];
+  return [item.link, item.sourceUrl].filter(Boolean).some((value) => {
+    try {
+      const url = new URL(value as string);
+      const domain = normalizeDomain(url.hostname);
+      const handle = url.pathname.split("/").filter(Boolean)[0]?.toLowerCase();
+      return allowedDomains.includes(domain) && handle === expectedHandle;
+    } catch {
+      return false;
+    }
+  });
+};
+
+const itemMatchesTerms = (item: NewsItem, terms: string[]) => {
+  if (terms.length === 0) return true;
+  const haystack = normalizeText(`${item.title} ${item.description} ${item.source}`);
+  return terms.some((term) => haystack.includes(normalizeText(term)));
+};
+
+const parseFeedXml = (xml: string, source: NewsSource): NewsItem[] => {
+  const doc = new DOMParser().parseFromString(xml, "text/xml");
+  return [...doc.querySelectorAll("item, entry")].slice(0, 12).map((item, index) => {
+    const title = item.querySelector("title")?.textContent || "Post";
+    const link =
+      item.querySelector("link")?.getAttribute("href") ||
+      item.querySelector("link")?.textContent ||
+      source.value;
+    const publishedAt =
+      item.querySelector("pubDate")?.textContent ||
+      item.querySelector("published")?.textContent ||
+      item.querySelector("updated")?.textContent ||
+      null;
+    const description = stripHtml(
+      item.querySelector("description")?.textContent ||
+        item.querySelector("summary")?.textContent ||
+        item.querySelector("content")?.textContent ||
+        ""
+    );
+    return {
+      id: `${source.id}-${index}-${link}`,
+      title,
+      link,
+      source: source.name,
+      sourceUrl: source.value,
+      publishedAt,
+      description,
+    };
+  });
+};
+
+async function fetchSocialFeed(source: NewsSource): Promise<NewsItem[]> {
+  const handle = socialHandle(source.value);
+  if (!handle) return [];
+  const paths =
+    source.type === "instagram"
+      ? [
+          `/rsshub/picnob.info/user/${encodeURIComponent(handle)}`,
+          `/rsshub/picnob/user/${encodeURIComponent(handle)}`,
+          `/rsshub/instagram/2/user/${encodeURIComponent(handle)}`,
+          `/rsshub/instagram/user/${encodeURIComponent(handle)}`,
+        ]
+      : [
+          `/rsshub/twitter/user/${encodeURIComponent(handle)}`,
+          `/nitter-api/${encodeURIComponent(handle)}/rss`,
+          `/xcancel-api/${encodeURIComponent(handle)}/rss`,
+          `/rss-xcancel/${encodeURIComponent(handle)}`,
+        ];
+
+  for (const path of paths) {
+    try {
+      const res = await fetch(path, { headers: { Accept: "application/rss+xml,text/xml" } });
+      if (!res.ok) continue;
+      const feedItems = parseFeedXml(await res.text(), source);
+      if (feedItems.length > 0) return feedItems;
+    } catch {
+      // Try the next bridge route.
+    }
+  }
+  return [];
+}
+
+async function fetchGoogleNews(query: string, source: NewsSource): Promise<NewsItem[]> {
   const url = `/news-rss/search?q=${encodeURIComponent(query)}&hl=pt-BR&gl=BR&ceid=BR:pt-419`;
   const res = await fetch(url, { headers: { Accept: "application/rss+xml,text/xml" } });
   if (!res.ok) throw new Error(`Google News HTTP ${res.status}`);
   const xml = await res.text();
   const doc = new DOMParser().parseFromString(xml, "text/xml");
-  return [...doc.querySelectorAll("item")].slice(0, 8).map((item, index) => {
+  return [...doc.querySelectorAll("item")].map((item, index) => {
     const title = item.querySelector("title")?.textContent || "Notícia";
     const link = item.querySelector("link")?.textContent || "#";
+    const sourceUrl = item.querySelector("source")?.getAttribute("url") || null;
     const publishedAt = item.querySelector("pubDate")?.textContent || null;
     const description = stripHtml(item.querySelector("description")?.textContent || "");
     return {
-      id: `${sourceName}-${index}-${link}`,
+      id: `${source.id}-${index}-${link}`,
       title,
       link,
-      source: sourceName,
+      source: source.name,
+      sourceUrl,
       publishedAt,
       description,
     };
-  });
+  }).filter((item) => sourceMatchesItem(source, item)).slice(0, 8);
 }
 
 async function fetchDirectRss(source: NewsSource): Promise<NewsItem[]> {
   const res = await fetch(source.value, { headers: { Accept: "application/rss+xml,text/xml" } });
   if (!res.ok) throw new Error(`RSS HTTP ${res.status}`);
+  return parseFeedXml(await res.text(), source).slice(0, 8);
+/*
   const xml = await res.text();
   const doc = new DOMParser().parseFromString(xml, "text/xml");
   return [...doc.querySelectorAll("item, entry")].slice(0, 8).map((item, index) => {
@@ -130,10 +248,12 @@ async function fetchDirectRss(source: NewsSource): Promise<NewsItem[]> {
       title,
       link,
       source: source.name,
+      sourceUrl: source.value,
       publishedAt,
       description,
     };
   });
+*/
 }
 
 const PredictionsPage = () => {
@@ -143,14 +263,15 @@ const PredictionsPage = () => {
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [selectedSource, setSelectedSource] = useState("all");
   const [customQuery, setCustomQuery] = useState("");
+  const [onlyFavorites, setOnlyFavorites] = useState(true);
   const [form, setForm] = useState({ type: "site" as SourceType, name: "", value: "" });
   const requestIdRef = useRef(0);
 
   const favoriteTerms = useMemo(() => favorites.map((fav) => fav.nome).filter(Boolean).slice(0, 8), [favorites]);
   const searchTerms = useMemo(() => {
     const typed = customQuery.split(",").map((term) => term.trim()).filter(Boolean);
-    return [...new Set([...favoriteTerms, ...typed])];
-  }, [customQuery, favoriteTerms]);
+    return [...new Set([...(onlyFavorites ? favoriteTerms : []), ...typed])];
+  }, [customQuery, favoriteTerms, onlyFavorites]);
   const enabledSources = useMemo(() => sources.filter((source) => source.enabled), [sources]);
 
   const buildQuery = useCallback(
@@ -159,7 +280,8 @@ const PredictionsPage = () => {
       const termQuery = terms.map((term) => `"${term}"`).join(" OR ");
       if (source.type === "site") return `(${termQuery}) futebol site:${normalizeDomain(source.value)}`;
       if (source.type === "x" || source.type === "instagram") {
-        return `(${termQuery}) futebol ${source.name} ${socialLabel(source.value)}`;
+        const domain = source.type === "instagram" ? "instagram.com" : "x.com";
+        return `(${termQuery}) futebol site:${domain}/${socialHandle(source.value)}`;
       }
       return `(${termQuery}) futebol`;
     },
@@ -173,14 +295,17 @@ const PredictionsPage = () => {
     try {
       const batches = await Promise.allSettled(
         enabledSources.map((source) =>
-          source.type === "rss" && /^https?:\/\//i.test(source.value)
+          source.type === "x" || source.type === "instagram"
+            ? fetchSocialFeed(source)
+            : source.type === "rss" && /^https?:\/\//i.test(source.value)
             ? fetchDirectRss(source)
-            : fetchGoogleNews(buildQuery(source), source.name)
+            : fetchGoogleNews(buildQuery(source), source)
         )
       );
       const seen = new Set<string>();
       const nextItems = batches
         .flatMap((batch) => (batch.status === "fulfilled" ? batch.value : []))
+        .filter((item) => itemMatchesTerms(item, searchTerms))
         .filter((item) => {
           if (seen.has(item.link)) return false;
           seen.add(item.link);
@@ -194,7 +319,7 @@ const PredictionsPage = () => {
     } catch {
       if (requestIdRef.current === requestId) setStatus("error");
     }
-  }, [buildQuery, enabledSources]);
+  }, [buildQuery, enabledSources, searchTerms]);
 
   useEffect(() => {
     writeSources(sources);
@@ -208,6 +333,14 @@ const PredictionsPage = () => {
     if (selectedSource === "all") return items;
     return items.filter((item) => item.source === selectedSource);
   }, [items, selectedSource]);
+  const selectedSourceConfig = useMemo(
+    () => sources.find((source) => source.name === selectedSource) || null,
+    [selectedSource, sources]
+  );
+  const emptyMessage =
+    selectedSourceConfig?.type === "x" || selectedSourceConfig?.type === "instagram"
+      ? `Nenhum post direto encontrado para ${socialLabel(selectedSourceConfig.value)}. Foram tentadas pontes RSSHub/Nitter/XCancel; se continuar vazio, elas podem estar bloqueadas para esse perfil ou sem acesso ao X no momento.`
+      : "Nenhuma notícia encontrada para os filtros atuais.";
 
   const addSource = (event: FormEvent) => {
     event.preventDefault();
@@ -273,6 +406,15 @@ const PredictionsPage = () => {
                   </option>
                 ))}
               </select>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={onlyFavorites}
+                  onChange={(event) => setOnlyFavorites(event.target.checked)}
+                  className="h-4 w-4 accent-sport"
+                />
+                Apenas favoritos
+              </label>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               {(searchTerms.length ? searchTerms : ["futebol brasileiro", "mercado da bola"]).map((term) => (
@@ -298,7 +440,7 @@ const PredictionsPage = () => {
 
           {status !== "loading" && filteredItems.length === 0 && (
             <div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-muted-foreground">
-              Nenhuma notícia encontrada para os filtros atuais.
+              {emptyMessage}
             </div>
           )}
 

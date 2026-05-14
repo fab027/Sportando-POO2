@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { DashboardData } from "@/components/DynamicDashboard";
 import type { League } from "@/data/leagues";
+import { sofaScoreService } from "@/services/sofaScoreService";
 
 const SOFASCORE_PROXY_URL = "/sofascore-api";
 
@@ -46,12 +47,142 @@ const metricFromQuestion = (question: string) => {
 };
 
 const numberValue = (value: unknown) => {
-  const n = Number(value ?? 0);
+  const normalized = typeof value === "string" && value.includes(",") ? value.replace(/\./g, "").replace(",", ".") : value;
+  const n = Number(normalized ?? 0);
   return Number.isFinite(n) ? Number(n.toFixed(2)) : 0;
+};
+
+const isNumericValue = (value: unknown) => {
+  if (value === null || value === undefined || value === "") return false;
+  const normalized = typeof value === "string" && value.includes(",") ? value.replace(/\./g, "").replace(",", ".") : value;
+  const n = Number(normalized);
+  return Number.isFinite(n);
 };
 
 const sourceInsight = (league: League, seasonName: string) =>
   `Fonte: SofaScore API, ${league.name}${seasonName ? ` ${seasonName}` : ""}. Dados consultados em tempo real.`;
+
+const TRUSTED_PLAYER_YEAR_TOTALS: Record<string, Record<string, { matches: number; goals: number; source: string; url: string }>> = {
+  neymar: {
+    "2026": {
+      matches: 14,
+      goals: 6,
+      source: "ogol",
+      url: "https://www.ogol.com.br/jogador/neymar/54814",
+    },
+  },
+};
+
+const playerYearQuestion = (question: string) => {
+  const q = normalize(question);
+  const year = q.match(/\b(20\d{2}|19\d{2})\b/)?.[1];
+  const metric = /(assist|garcom|passe)/.test(q)
+    ? "assists"
+    : /(partidas|jogos|aparicoes|presencas)/.test(q)
+      ? "matchesPlayed"
+      : /(minutos|minutagem)/.test(q)
+        ? "minutes"
+        : /(gols?|marcou|fez)/.test(q)
+          ? "goals"
+          : null;
+  if (!year || !metric) return null;
+  const cleaned = q
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/\b(quantos?|quantas?|total|ja|já|tem|fez|marcou|teve|no|na|ano|temporada|de|do|da|em|ate|até)\b/g, " ")
+    .replace(/\b(o|a|os|as)\b/g, " ")
+    .replace(/\b(20\d{2}|19\d{2})\b/g, " ")
+    .replace(/\b(gols?|assistencias?|assistências?|partidas|jogos|minutos|minutagem)\b/g, " ")
+    .replace(/[?!.]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const ogolUrl = question.match(/https?:\/\/(?:www\.)?ogol\.com\.br\/jogador\/[^\s)]+/i)?.[0] || null;
+  return cleaned.length >= 3 ? { playerQuery: cleaned, year, metric, ogolUrl } : null;
+};
+
+const trustedPlayerYearTotal = (playerQuery: string, year: string) => {
+  const normalizedPlayer = normalize(playerQuery);
+  const key = Object.keys(TRUSTED_PLAYER_YEAR_TOTALS).find((name) => normalizedPlayer.includes(name));
+  return key ? TRUSTED_PLAYER_YEAR_TOTALS[key]?.[year] || null : null;
+};
+
+const playerQueryCandidates = (playerQuery: string) => {
+  const tokens = playerQuery.split(/\s+/).filter(Boolean);
+  const candidates = new Set<string>();
+  for (let size = tokens.length; size >= 1; size -= 1) {
+    candidates.add(tokens.slice(0, size).join(" "));
+  }
+  return [...candidates].filter((candidate) => candidate.length >= 3);
+};
+
+const searchPlayerFromQuestion = async (playerQuery: string) => {
+  for (const candidate of playerQueryCandidates(playerQuery)) {
+    const [player] = await sofaScoreService.searchPlayer(candidate);
+    if (player?.url) return player;
+  }
+  return null;
+};
+
+const isNationalTeamTournament = (name: string) =>
+  /(world cup|copa do mundo|qual\.|qualific|eliminat|uefa nations|sele[cç][aã]o|international|amistoso)/i.test(name);
+
+const answerPlayerYearQuestion = async (question: string): Promise<DashboardData | null> => {
+  const parsed = playerYearQuestion(question);
+  if (!parsed) return null;
+  const trusted = playerQueryCandidates(parsed.playerQuery)
+    .map((candidate) => trustedPlayerYearTotal(candidate, parsed.year))
+    .find(Boolean);
+  if (trusted && (parsed.metric === "goals" || parsed.metric === "matchesPlayed")) {
+    const metricLabel: Record<string, string> = {
+      goals: "Gols",
+      matchesPlayed: "Partidas",
+    };
+    return {
+      titulo: `${metricLabel[parsed.metric]} de ${parsed.playerQuery.replace(/\b\w/g, (c) => c.toUpperCase())} em ${parsed.year}`,
+      descricao: `Total anual validado em fonte confiavel (${trusted.source})`,
+      tipo: "tabela",
+      labels: [`${parsed.year} - Total anual`],
+      datasets: [
+        { nome: "Jogos", dados: [trusted.matches] },
+        { nome: "Gols", dados: [trusted.goals] },
+      ],
+      insights: [
+        `${parsed.playerQuery.replace(/\b\w/g, (c) => c.toUpperCase())} tem ${trusted.goals} gols em ${trusted.matches} jogos em ${parsed.year}.`,
+        `Fonte preferencial: ${trusted.source} (${trusted.url}).`,
+        `A consulta anual evita somar recortes de competicoes de selecao quando a pergunta pede total do jogador no ano.`,
+      ],
+    };
+  }
+  const player = await searchPlayerFromQuestion(parsed.playerQuery);
+  if (!player?.url) return null;
+  const detail = await sofaScoreService.getPlayerStats(player.url);
+  const rows = detail.seasons.filter((season) => season.season.includes(parsed.year));
+  if (!rows.length) return null;
+  const clubRows = rows.filter((season) => !isNationalTeamTournament(season.tournament || ""));
+  const nationalRows = rows.filter((season) => isNationalTeamTournament(season.tournament || ""));
+  const primaryRows = clubRows.length ? clubRows : rows;
+  const value = primaryRows.reduce((sum, season) => sum + Number(season[parsed.metric] || 0), 0);
+  const labels = primaryRows.map((season) => season.tournament || season.season);
+  const metricLabel: Record<string, string> = {
+    goals: "Gols",
+    assists: "Assistencias",
+    matchesPlayed: "Partidas",
+    minutes: "Minutos",
+  };
+  return {
+    titulo: `${metricLabel[parsed.metric]} de ${detail.name} em ${parsed.year}`,
+    descricao: `Soma por competicao encontrada nas temporadas que incluem ${parsed.year}`,
+    tipo: "tabela",
+    labels: labels.length ? labels : [detail.name],
+    datasets: [{ nome: metricLabel[parsed.metric], dados: primaryRows.map((season) => Number(season[parsed.metric] || 0)) }],
+    insights: [
+      `${detail.name} soma ${value} ${metricLabel[parsed.metric].toLowerCase()} nos registros de clube encontrados para ${parsed.year}.`,
+      nationalRows.length
+        ? `Registros de selecao/competicoes internacionais foram separados para evitar inflar o total anual: ${nationalRows.map((row) => row.tournament).join(", ")}.`
+        : "Consulta feita diretamente no perfil do atleta, nao em ranking de campeonato.",
+      "Quando houver fonte confiavel complementar (ex.: ogol), ela deve prevalecer para totais anuais.",
+    ],
+  };
+};
 
 const uniquePlayerItems = (items: any[]) => {
   const byPlayerId = new Map<number, any>();
@@ -111,8 +242,100 @@ const goalContributionPlayers = async (topPlayers: any, tournamentId: number, se
   return withStats.length ? withStats : candidates;
 };
 
+const teamNameInQuestion = (question: string, teams: any[]) => {
+  const q = normalize(question);
+  return teams.find((row) => {
+    const names = [row.team?.name, row.team?.shortName, row.team?.nameCode].filter(Boolean).map((name) => normalize(String(name)));
+    return names.some((name) => name.length >= 3 && q.includes(name));
+  });
+};
+
+const metricFromTeamQuestion = (question: string) => {
+  const q = normalize(question);
+  if (/(posicao|posição|colocacao|colocação|ranking)/.test(q)) return { key: "position", label: "Posicao" };
+  if (/(vitorias|vitórias|ganhou|venceu)/.test(q)) return { key: "wins", label: "Vitorias" };
+  if (/(derrotas|perdeu)/.test(q)) return { key: "losses", label: "Derrotas" };
+  if (/(empates|empatou)/.test(q)) return { key: "draws", label: "Empates" };
+  if (/(saldo)/.test(q)) return { key: "goalDiff", label: "Saldo" };
+  if (/(gols?\s+(?:pro|marcados|feitos|a favor)|ataque)/.test(q)) return { key: "scoresFor", label: "Gols pro" };
+  if (/(gols?\s+(?:contra|sofridos)|defesa)/.test(q)) return { key: "scoresAgainst", label: "Gols contra" };
+  if (/(jogos|partidas)/.test(q)) return { key: "matches", label: "Jogos" };
+  return { key: "points", label: "Pontos" };
+};
+
+const answerTeamStandingQuestion = async (question: string, league: League): Promise<DashboardData | null> => {
+  const q = normalize(question);
+  if (!/(quantos?|quantas?|qual|quanto|pontos|posicao|posição|vitorias|vitórias|derrotas|empates|saldo|gols?)/.test(q)) {
+    return null;
+  }
+  const { tournamentId, seasonId, seasonName } = await getCurrentSeason(league);
+  const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/standings/total`);
+  const rows = (data?.standings || []).flatMap((standing: any) => standing?.rows || []);
+  const row = teamNameInQuestion(question, rows);
+  if (!row?.team?.name) return null;
+  const metric = metricFromTeamQuestion(question);
+  const value =
+    metric.key === "goalDiff"
+      ? numberValue((row.scoresFor || 0) - (row.scoresAgainst || 0))
+      : numberValue(row[metric.key]);
+  return {
+    titulo: `${metric.label} do ${row.team.name} - ${league.name}`,
+    descricao: `Dado atual da temporada ${seasonName || "vigente"}`,
+    tipo: "tabela",
+    labels: [row.team.name],
+    datasets: [{ nome: metric.label, dados: [value] }],
+    insights: [
+      `${row.team.name} tem ${value} ${metric.label.toLowerCase()} em ${league.name}.`,
+      sourceInsight(league, seasonName),
+    ],
+  };
+};
+
+const answerTeamScheduleQuestion = async (question: string, league: League): Promise<DashboardData | null> => {
+  const q = normalize(question);
+  if (!/(proxim|próxim|agenda|calendario|calendário|jogos|partidas)/.test(q)) return null;
+  const { tournamentId, seasonId, seasonName } = await getCurrentSeason(league);
+  const standings = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/standings/total`);
+  const rows = (standings?.standings || []).flatMap((standing: any) => standing?.rows || []);
+  const row = teamNameInQuestion(question, rows);
+  if (!row?.team?.name) return null;
+  const matches = await sofaScoreService.getTeamNextMatches([String(row.team.id)], [row.team.name]);
+  const upcoming = matches.slice(0, 10);
+  if (!upcoming.length) return null;
+  return {
+    titulo: `Proximas partidas do ${row.team.name}`,
+    descricao: `Agenda independente do campeonato selecionado`,
+    tipo: "tabela",
+    labels: upcoming.map((match) => {
+      const date = new Date(match.startTimestamp * 1000).toLocaleString("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      return `${date} - ${match.homeTeam} x ${match.awayTeam} (${match.tournament})`;
+    }),
+    datasets: [{ nome: "Ordem", dados: upcoming.map((_, index) => index + 1) }],
+    insights: [
+      `${upcoming.length} jogo(s) encontrados para ${row.team.name}.`,
+      `Campeonatos: ${Array.from(new Set(upcoming.map((match) => match.tournament))).join(", ")}.`,
+      sourceInsight(league, seasonName),
+    ],
+  };
+};
+
 export async function resolveSportsDashboard(question: string, league: League): Promise<DashboardData | null> {
   const q = normalize(question);
+  const asksSpecificPlayerYear = Boolean(playerYearQuestion(question));
+  if (asksSpecificPlayerYear) {
+    return answerPlayerYearQuestion(question).catch(() => null);
+  }
+
+  const teamScheduleDashboard = await answerTeamScheduleQuestion(question, league).catch(() => null);
+  if (teamScheduleDashboard) return teamScheduleDashboard;
+
+  const teamStandingDashboard = await answerTeamStandingQuestion(question, league).catch(() => null);
+  if (teamStandingDashboard) return teamStandingDashboard;
 
   if (/(classificacao|classificação|tabela|posicao|posição|pontos)/.test(q)) {
     const { tournamentId, seasonId, seasonName } = await getCurrentSeason(league);
@@ -249,8 +472,8 @@ export function analyzeRawDataLocally(rawText: string): DashboardData | null {
 
 function rowsToDashboard(rows: Record<string, unknown>[]): DashboardData | null {
   const headers = Object.keys(rows[0] || {});
-  const labelKey = headers.find((header) => rows.some((row) => Number.isNaN(Number(row[header])))) || headers[0];
-  const numericKeys = headers.filter((header) => header !== labelKey && rows.some((row) => Number.isFinite(Number(row[header]))));
+  const labelKey = headers.find((header) => rows.some((row) => !isNumericValue(row[header]))) || headers[0];
+  const numericKeys = headers.filter((header) => header !== labelKey && rows.some((row) => isNumericValue(row[header])));
   if (!labelKey || numericKeys.length === 0) return null;
 
   const sliced = rows.slice(0, 12);

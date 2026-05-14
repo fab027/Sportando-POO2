@@ -6,21 +6,29 @@ import { useMatches, useTodayMatches, useLiveMatches } from "@/hooks/useSofaScor
 import { SofaMatch } from "@/services/sofaScoreService";
 import FilterBar, { FilterDef } from "@/components/FilterBar";
 
-const isLive = (s: string) =>
-  !["scheduled", "Not started", "agendado", "Finished", "FT", "After Extra Time", "After Penalties", "encerrado", "Postponed"].includes(s);
+const normalizedStatus = (s: string) => s.toLowerCase();
 
-const isFinished = (s: string) =>
-  ["Finished", "FT", "After Extra Time", "After Penalties", "encerrado"].includes(s);
+const isLive = (s: string) => {
+  const status = normalizedStatus(s);
+  return status === "live" || status === "inprogress" || status === "intervalo";
+};
 
-const isScheduled = (s: string) =>
-  ["scheduled", "Not started", "agendado"].includes(s);
+const isFinished = (s: string) => {
+  const status = normalizedStatus(s);
+  return status === "finished" || status === "ft" || status.includes("after") || status === "encerrado";
+};
+
+const isScheduled = (s: string) => {
+  const status = normalizedStatus(s);
+  return status === "scheduled" || status === "not started" || status === "agendado" || status === "notstarted";
+};
 
 const statusConfig = (s: string) => {
   if (isScheduled(s)) return { text: "Agendada", cls: "bg-sport-light text-sport" };
   if (isFinished(s)) return { text: "Finalizada", cls: "bg-secondary text-muted-foreground" };
-  if (s === "Postponed") return { text: "Adiada", cls: "bg-orange-100 text-orange-600" };
-  if (s === "intervalo") return { text: "Intervalo", cls: "bg-orange-100 text-orange-600" };
-  return { text: "Ao Vivo 🔴", cls: "bg-destructive/10 text-destructive" };
+  if (isLive(s)) return { text: "Ao vivo", cls: "bg-destructive/10 text-destructive" };
+  if (normalizedStatus(s) === "postponed") return { text: "Adiada", cls: "bg-orange-100 text-orange-600" };
+  return { text: s || "Indefinido", cls: "bg-secondary text-muted-foreground" };
 };
 
 const formatDate = (ts: number) =>
@@ -74,6 +82,7 @@ const MatchCard = ({ m }: { m: SofaMatch & { _type?: string } }) => {
         {m.roundInfo && <span className="text-xs text-muted-foreground">Rodada {m.roundInfo}</span>}
         <span className="text-xs text-muted-foreground">{m.tournament}</span>
         <span className="text-xs text-muted-foreground">{formatDate(m.startTimestamp)}</span>
+        <span className="text-xs text-muted-foreground">Local: {m.venue || "TBD"}</span>
       </div>
     </div>
   );
@@ -237,6 +246,7 @@ const MatchesPage = () => {
                 <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${st.cls}`}>{st.text}</span>
                 <span className="text-xs text-muted-foreground">{m.tournament}</span>
                 {m.time && <span className="text-xs text-muted-foreground">{m.time}</span>}
+                <span className="text-xs text-muted-foreground">Local: {m.venue || "TBD"}</span>
               </div>
             </div>
           );
@@ -254,13 +264,14 @@ const MatchesPage = () => {
               <div className="text-right flex-1"><p className="font-display font-semibold text-foreground">{m.homeTeam}</p></div>
               <div className="text-center">
                 <span className="font-display text-xl font-bold text-destructive">{m.homeScore} — {m.awayScore}</span>
-                {m.minute && <p className="text-xs text-destructive font-medium mt-1">{m.minute}'</p>}
+                {m.minute && <p className="text-xs text-destructive font-medium mt-1">{m.minute}</p>}
               </div>
               <div className="flex-1"><p className="font-display font-semibold text-foreground">{m.awayTeam}</p></div>
             </div>
             <div className="mt-2 flex items-center justify-center gap-3">
               <span className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-destructive/10 text-destructive">🔴 Ao Vivo</span>
               <span className="text-xs text-muted-foreground">{m.tournament}</span>
+              {"period" in m && m.period && <span className="text-xs text-muted-foreground">{m.period}</span>}
             </div>
           </div>
         ))}

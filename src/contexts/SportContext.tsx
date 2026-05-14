@@ -13,6 +13,8 @@ interface SportContextType {
   setLeague: (league: League) => void;
   /** True when the sport is locked by the user's profile (RF03). */
   isLocked: boolean;
+  profileSportMode: "profile" | "both";
+  setProfileSportMode: (mode: "profile" | "both") => void;
 }
 
 const SportContext = createContext<SportContextType | undefined>(undefined);
@@ -20,22 +22,33 @@ const SportContext = createContext<SportContextType | undefined>(undefined);
 const profileToSport = (p?: string | null): Sport =>
   p === "basquete" ? "basketball" : "football";
 
+const PROFILE_SPORT_MODE_KEY = "sportando.profileSportMode";
+
 export const SportProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { profile } = useAuth();
   const profileSport = profileToSport(profile?.sport_profile);
 
   const [sport, setSportState] = useState<Sport>(profileSport);
   const [league, setLeagueState] = useState<League>(getDefaultLeague(profileSport));
+  const [profileSportMode, setProfileSportModeState] = useState<"profile" | "both">(() => {
+    if (typeof window === "undefined") return "profile";
+    return localStorage.getItem(PROFILE_SPORT_MODE_KEY) === "both" ? "both" : "profile";
+  });
 
   // Lock to profile sport whenever the profile loads/changes
   useEffect(() => {
-    if (!profile) return;
+    if (!profile || profileSportMode === "both") return;
     const s = profileToSport(profile.sport_profile);
     setSportState(s);
     setLeagueState((cur) => (cur.sport === s ? cur : getDefaultLeague(s)));
-  }, [profile]);
+  }, [profile, profileSportMode]);
 
-  const isLocked = !!profile;
+  const isLocked = !!profile && profileSportMode === "profile";
+
+  const setProfileSportMode = useCallback((mode: "profile" | "both") => {
+    setProfileSportModeState(mode);
+    localStorage.setItem(PROFILE_SPORT_MODE_KEY, mode);
+  }, []);
 
   const setSport = useCallback(
     (s: Sport) => {
@@ -59,8 +72,8 @@ export const SportProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const sportClass = sport === "football" ? "sport-football" : "sport-basketball";
 
   const value = useMemo(
-    () => ({ sport, setSport, sportLabel, sportClass, league, setLeague, isLocked }),
-    [sport, setSport, sportLabel, sportClass, league, setLeague, isLocked]
+    () => ({ sport, setSport, sportLabel, sportClass, league, setLeague, isLocked, profileSportMode, setProfileSportMode }),
+    [sport, setSport, sportLabel, sportClass, league, setLeague, isLocked, profileSportMode, setProfileSportMode]
   );
 
   return <SportContext.Provider value={value}>{children}</SportContext.Provider>;

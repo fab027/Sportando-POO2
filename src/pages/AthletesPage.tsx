@@ -1,9 +1,9 @@
-import { useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { Search, RefreshCw, User, ArrowLeft, Shield, Star } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useSport } from "@/contexts/SportContext";
 import { useStandings, usePlayerSearch, usePlayerStats, useTeamPlayers } from "@/hooks/useSofaScoreData";
-import { PlayerDetail, TeamPlayer } from "@/services/sofaScoreService";
+import { PlayerDetail, SofaMatch, TeamPlayer, sofaScoreService } from "@/services/sofaScoreService";
 import FilterBar, { FilterDef } from "@/components/FilterBar";
 import { useFavorites } from "@/contexts/FavoritesContext";
 
@@ -20,6 +20,9 @@ const PlayerCard = ({
   const { sport } = useSport();
   const esporte: "football" | "basketball" = sport === "basketball" ? "basketball" : "football";
   const fav = isFavorite("atleta", playerUrl);
+  const [openSeasons, setOpenSeasons] = useState<Record<string, boolean>>(() => ({
+    [player.seasons[0]?.season || ""]: true,
+  }));
   const totals = player.seasons.reduce(
     (acc, season) => ({
       matches: acc.matches + season.matchesPlayed,
@@ -36,6 +39,13 @@ const PlayerCard = ({
     if (r >= 6.5) return "bg-yellow-500 text-white";
     return "bg-muted text-foreground";
   };
+  const groupedSeasons = useMemo(() => {
+    const groups = new Map<string, PlayerDetail["seasons"]>();
+    player.seasons.forEach((season) => {
+      groups.set(season.season, [...(groups.get(season.season) || []), season]);
+    });
+    return Array.from(groups.entries());
+  }, [player.seasons]);
 
   return (
     <div className="space-y-6">
@@ -45,9 +55,13 @@ const PlayerCard = ({
 
       <div className="rounded-xl border border-border bg-card p-6">
         <div className="flex items-start gap-6">
-          <div className="flex h-20 w-20 items-center justify-center rounded-full bg-sport/10 text-sport">
-            <User className="h-10 w-10" />
-          </div>
+          {player.imageUrl ? (
+            <img src={player.imageUrl} alt={player.name} className="h-20 w-20 rounded-full bg-sport/10 object-cover" />
+          ) : (
+            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-sport/10 text-sport">
+              <User className="h-10 w-10" />
+            </div>
+          )}
           <div className="flex-1">
             <div className="flex items-start justify-between gap-4">
               <h2 className="font-display text-2xl font-bold text-foreground">{player.name}</h2>
@@ -122,11 +136,30 @@ const PlayerCard = ({
                   </tr>
                 </thead>
                 <tbody>
-                  {player.seasons.map((s, i) => (
-                    <tr key={i} className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
+                  {groupedSeasons.flatMap(([seasonName, competitions]) => [
+                    <tr key={`${seasonName}-header`} className="border-b border-border bg-secondary/30">
+                      <td colSpan={11} className="px-4 py-3">
+                        <button
+                          onClick={() => setOpenSeasons((current) => ({ ...current, [seasonName]: !current[seasonName] }))}
+                          className="flex w-full items-center justify-between text-left text-sm font-semibold text-foreground"
+                        >
+                          <span>Temporada {seasonName}</span>
+                          <span className="text-xs font-normal text-muted-foreground">
+                            {openSeasons[seasonName] ? "Fechar" : "Abrir"}
+                          </span>
+                        </button>
+                      </td>
+                    </tr>,
+                    ...(openSeasons[seasonName] ? competitions.map((s, i) => (
+                    <tr key={`${seasonName}-${s.tournament}-${i}`} className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
                       <td className="px-4 py-3 font-medium text-foreground">{s.season}</td>
                       <td className="px-4 py-3 text-muted-foreground">{s.tournament || "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{s.team || "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        <div className="flex items-center gap-2">
+                          {s.teamImageUrl && <img src={s.teamImageUrl} alt="" className="h-6 w-6 object-contain" loading="lazy" />}
+                          <span>{s.team || "—"}</span>
+                        </div>
+                      </td>
                       <td className="px-4 py-3 text-center text-foreground">{s.matchesPlayed}</td>
                       <td className="px-4 py-3 text-center text-muted-foreground">{s.starts ?? "—"}</td>
                       <td className="px-4 py-3 text-center text-muted-foreground">{s.minutes}</td>
@@ -144,7 +177,8 @@ const PlayerCard = ({
                         )}
                       </td>
                     </tr>
-                  ))}
+                    )) : []),
+                  ])}
                 </tbody>
               </table>
             </div>
@@ -176,18 +210,58 @@ const ageBucket = (age?: number) => {
   return "29+";
 };
 
+const formatMatchDate = (ts: number) =>
+  new Date(ts * 1000).toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
 const AthletesPage = () => {
   const { league } = useSport();
+  const params = new URLSearchParams(window.location.search);
   const [search, setSearch] = useState("");
-  const [selectedPlayerUrl, setSelectedPlayerUrl] = useState<string | null>(null);
-  const [selectedTeam, setSelectedTeam] = useState<string | null>(null);
-  const [mode, setMode] = useState<"search" | "team">("search");
+  const [selectedPlayerUrl, setSelectedPlayerUrl] = useState<string | null>(params.get("player"));
+  const [selectedTeam, setSelectedTeam] = useState<string | null>(params.get("team"));
+  const [mode, setMode] = useState<"search" | "team">(params.get("team") ? "team" : "search");
   const [filters, setFilters] = useState<Record<string, string>>({ position: "all", age: "all" });
+  const [teamNextMatches, setTeamNextMatches] = useState<SofaMatch[]>([]);
+  const [teamMatchesStatus, setTeamMatchesStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
 
   const { results: searchResults, status: searchStatus, search: doSearch } = usePlayerSearch();
   const { data: playerData, status: playerStatus } = usePlayerStats(selectedPlayerUrl);
   const { data: standings } = useStandings(league.sofascoreUrl);
   const { data: teamPlayers, status: teamPlayersStatus } = useTeamPlayers(selectedTeam);
+  const selectedTeamInfo = useMemo(
+    () => standings.find((team) => team.name === selectedTeam || team.shortName === selectedTeam) || null,
+    [selectedTeam, standings]
+  );
+
+  useEffect(() => {
+    if (!selectedTeam) {
+      setTeamNextMatches([]);
+      setTeamMatchesStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    setTeamMatchesStatus("loading");
+    sofaScoreService
+      .getTeamNextMatches(selectedTeamInfo?.id ? [String(selectedTeamInfo.id)] : [], [selectedTeam])
+      .then((matches) => {
+        if (cancelled) return;
+        setTeamNextMatches(matches.slice(0, 6));
+        setTeamMatchesStatus("success");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTeamNextMatches([]);
+        setTeamMatchesStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedTeam, selectedTeamInfo?.id]);
 
   const handleSearch = useCallback((value: string) => {
     setSearch(value);
@@ -376,9 +450,13 @@ const AthletesPage = () => {
                   onClick={() => setSelectedTeam(t.name)}
                   className="flex items-center gap-3 rounded-xl border border-border bg-card p-4 text-left hover:shadow-md transition-shadow"
                 >
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-sport/10 text-sport font-bold text-sm">
-                    {t.position}
-                  </div>
+                  {t.imageUrl ? (
+                    <img src={t.imageUrl} alt="" className="h-10 w-10 object-contain" loading="lazy" />
+                  ) : (
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-sport/10 text-sport font-bold text-sm">
+                      {t.shortName}
+                    </div>
+                  )}
                   <div>
                     <p className="font-medium text-foreground">{t.name}</p>
                     <p className="text-xs text-muted-foreground">{t.shortName} · {t.points} pts</p>
@@ -400,10 +478,89 @@ const AthletesPage = () => {
           </button>
 
           <div className="flex items-center gap-3">
-            <Shield className="h-6 w-6 text-sport" />
+            {selectedTeamInfo?.imageUrl ? (
+              <img src={selectedTeamInfo.imageUrl} alt="" className="h-9 w-9 object-contain" />
+            ) : (
+              <Shield className="h-6 w-6 text-sport" />
+            )}
             <h2 className="font-display text-xl font-bold text-foreground">
               Elenco — {selectedTeam}
             </h2>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+            <div className="rounded-xl border border-border bg-card p-5">
+              <div className="flex items-start gap-4">
+                {selectedTeamInfo?.imageUrl ? (
+                  <img src={selectedTeamInfo.imageUrl} alt="" className="h-16 w-16 object-contain" />
+                ) : (
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-sport/10 text-sport">
+                    <Shield className="h-8 w-8" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium uppercase text-muted-foreground">Clube</p>
+                  <h3 className="mt-1 truncate font-display text-xl font-bold text-foreground">{selectedTeam}</h3>
+                  <p className="mt-1 text-sm text-muted-foreground">{league.name}</p>
+                </div>
+              </div>
+              {selectedTeamInfo ? (
+                <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-lg bg-secondary/40 p-3">
+                    <p className="text-xs text-muted-foreground">Posição</p>
+                    <p className="font-display text-lg font-bold text-foreground">#{selectedTeamInfo.position}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/40 p-3">
+                    <p className="text-xs text-muted-foreground">Pontos</p>
+                    <p className="font-display text-lg font-bold text-foreground">{selectedTeamInfo.points}</p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/40 p-3">
+                    <p className="text-xs text-muted-foreground">Campanha</p>
+                    <p className="font-semibold text-foreground">
+                      {selectedTeamInfo.wins}V {selectedTeamInfo.draws}E {selectedTeamInfo.losses}D
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/40 p-3">
+                    <p className="text-xs text-muted-foreground">Gols</p>
+                    <p className="font-semibold text-foreground">
+                      {selectedTeamInfo.scored} pró / {selectedTeamInfo.conceded} contra
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-4 text-sm text-muted-foreground">
+                  Informações de tabela indisponíveis para este clube na liga selecionada.
+                </p>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-5">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="font-display text-sm font-semibold text-foreground">Próximas partidas</h3>
+                {teamMatchesStatus === "loading" && <RefreshCw className="h-4 w-4 animate-spin text-sport" />}
+              </div>
+              {teamMatchesStatus === "error" ? (
+                <p className="text-sm text-muted-foreground">Não foi possível carregar a agenda do clube.</p>
+              ) : teamNextMatches.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Nenhuma partida futura encontrada.</p>
+              ) : (
+                <div className="space-y-2">
+                  {teamNextMatches.map((match) => (
+                    <div key={match.id} className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
+                      <p className="text-xs text-muted-foreground">
+                        {match.tournament}{match.roundInfo ? ` - Rodada ${match.roundInfo}` : ""}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-foreground">
+                          {match.homeTeam} <span className="text-xs text-muted-foreground">vs</span> {match.awayTeam}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{formatMatchDate(match.startTimestamp)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           <FilterBar
@@ -455,9 +612,18 @@ const AthletesPage = () => {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sport/10 text-sport">
-                            <User className="h-4 w-4" />
-                          </div>
+                          {p.imageUrl ? (
+                            <img
+                              src={p.imageUrl}
+                              alt={p.name}
+                              className="h-8 w-8 rounded-full bg-sport/10 object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sport/10 text-sport">
+                              <User className="h-4 w-4" />
+                            </div>
+                          )}
                           <span className="font-medium text-foreground">{p.name}</span>
                         </div>
                       </td>

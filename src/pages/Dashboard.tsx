@@ -16,8 +16,20 @@ import {
 } from "lucide-react";
 import { useLiveMatches, useMatches, useStandings, useTopPlayers } from "@/hooks/useSofaScoreData";
 import type { SofaMatch, SofaTeamStanding, SofaTopPlayer } from "@/services/sofaScoreService";
+import { sofaScoreService } from "@/services/sofaScoreService";
+import { useFavorites } from "@/contexts/FavoritesContext";
 
 const LIVE_COUNTRIES_STORAGE_KEY = "sportando.dashboard.liveCountries";
+
+const KNOWN_TOTAL_ROUNDS: Record<string, number> = {
+  "brasileirao-a": 38,
+  "brasileirao-b": 38,
+  "premier-league": 38,
+  "la-liga": 38,
+  "serie-a-it": 38,
+  bundesliga: 34,
+  "ligue-1": 34,
+};
 
 const formatDateTime = (ts: number) =>
   new Date(ts * 1000).toLocaleString("pt-BR", {
@@ -41,10 +53,19 @@ const isFinished = (match: SofaMatch) => {
 };
 
 const formatRound = (match: SofaMatch) => {
-  if (match.roundName) return match.roundName;
-  if (match.roundInfo) return `Rodada ${match.roundInfo}`;
+  if (match.roundName) return `${match.tournament} - ${match.roundName}`;
+  if (match.roundInfo) return `${match.tournament} - Rodada ${match.roundInfo}`;
   return match.tournament;
 };
+
+const maxRound = (matches: SofaMatch[]) =>
+  matches.reduce((max, match) => (match.roundInfo ? Math.max(max, match.roundInfo) : max), 0);
+
+const minRound = (matches: SofaMatch[]) =>
+  matches.reduce<number | null>(
+    (min, match) => (match.roundInfo ? Math.min(min ?? match.roundInfo, match.roundInfo) : min),
+    null
+  );
 
 const Card = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => (
   <section className={`rounded-xl border border-border bg-card ${className}`}>{children}</section>
@@ -117,8 +138,23 @@ const PlayerRanking = ({
     ) : (
       <div className="space-y-1.5">
         {players.slice(0, 6).map((player, index) => (
-          <div key={player.id} className="grid grid-cols-[1.75rem_1fr_auto] items-center gap-2 rounded-lg bg-secondary/30 px-3 py-1.5">
+          <div key={player.id} className="grid grid-cols-[1.75rem_2.25rem_1fr_auto] items-center gap-2 rounded-lg bg-secondary/30 px-3 py-1.5">
             <span className="font-mono text-xs text-muted-foreground">{index + 1}</span>
+            {player.imageUrl ? (
+              <img
+                src={player.imageUrl}
+                alt={player.name}
+                className="h-8 w-8 rounded-full bg-sport/10 object-cover"
+                loading="lazy"
+                onError={(event) => {
+                  event.currentTarget.style.visibility = "hidden";
+                }}
+              />
+            ) : (
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-sport/10 text-xs font-bold text-sport">
+                {player.name.slice(0, 1)}
+              </span>
+            )}
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-foreground">{player.name}</p>
               <p className="truncate text-xs text-muted-foreground">{player.team || "Time nao informado"}</p>
@@ -136,6 +172,9 @@ const PlayerRanking = ({
 
 const Dashboard = () => {
   const { sport, league } = useSport();
+  const { favorites } = useFavorites();
+  const [favoriteAthleteTeams, setFavoriteAthleteTeams] = useState<string[]>([]);
+  const [favoriteTeamMatches, setFavoriteTeamMatches] = useState<SofaMatch[]>([]);
   const [selectedLiveCountries, setSelectedLiveCountries] = useState<string[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -152,6 +191,14 @@ const Dashboard = () => {
   const { data: liveMatches, status: liveStatus, refetch: refetchLive } = useLiveMatches();
   const { data: topScorers, status: scorersStatus, refetch: refetchScorers } = useTopPlayers(league.sofascoreUrl, "goals");
   const { data: topAssists, status: assistsStatus, refetch: refetchAssists } = useTopPlayers(league.sofascoreUrl, "assists");
+  const favoriteTeamIds = useMemo(
+    () => new Set(favorites.filter((fav) => fav.tipo === "equipe").map((fav) => fav.referenciaId)),
+    [favorites]
+  );
+  const favoriteTeamNames = useMemo(
+    () => Array.from(new Set([...favorites.filter((fav) => fav.tipo === "equipe").map((fav) => fav.nome), ...favoriteAthleteTeams])).filter(Boolean),
+    [favoriteAthleteTeams, favorites]
+  );
 
   const groupedStandings = useMemo(() => {
     const groups = new Map<string, SofaTeamStanding[]>();
@@ -168,6 +215,48 @@ const Dashboard = () => {
   useEffect(() => {
     localStorage.setItem(LIVE_COUNTRIES_STORAGE_KEY, JSON.stringify(selectedLiveCountries));
   }, [selectedLiveCountries]);
+
+  useEffect(() => {
+    const athleteUrls = favorites
+      .filter((fav) => fav.tipo === "atleta" && /^https?:\/\//i.test(fav.referenciaId))
+      .map((fav) => fav.referenciaId);
+    if (athleteUrls.length === 0) {
+      setFavoriteAthleteTeams([]);
+      return;
+    }
+    let cancelled = false;
+    Promise.allSettled(athleteUrls.slice(0, 8).map((url) => sofaScoreService.getPlayerStats(url))).then((results) => {
+      if (cancelled) return;
+      setFavoriteAthleteTeams(
+        results
+          .filter((entry): entry is PromiseFulfilledResult<{ team: string }> => entry.status === "fulfilled")
+          .map((entry) => entry.value.team)
+          .filter(Boolean)
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [favorites]);
+
+  useEffect(() => {
+    const teamIds = Array.from(favoriteTeamIds);
+    if (teamIds.length === 0 && favoriteTeamNames.length === 0) {
+      setFavoriteTeamMatches([]);
+      return;
+    }
+    let cancelled = false;
+    sofaScoreService.getTeamNextMatches(teamIds, favoriteTeamNames)
+      .then((matches) => {
+        if (!cancelled) setFavoriteTeamMatches(Array.isArray(matches) ? matches : []);
+      })
+      .catch(() => {
+        if (!cancelled) setFavoriteTeamMatches([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [favoriteTeamIds, favoriteTeamNames]);
 
   const liveCountryOptions = useMemo(
     () =>
@@ -206,6 +295,18 @@ const Dashboard = () => {
   const lastRoundTitle = lastCompletedRound[0]?.roundInfo
     ? `Ultima rodada concluida - Rodada ${lastCompletedRound[0].roundInfo}`
     : "Ultimas partidas finalizadas";
+  const inferredTotalRounds =
+    KNOWN_TOTAL_ROUNDS[league.id] ||
+    (standings.length >= 10 && !groupedStandings.some((group) => group.name !== "Tabela geral")
+      ? (standings.length - 1) * 2
+      : maxRound([...lastMatches, ...nextMatches]));
+  const completedRoundCount = Math.max(
+    maxRound(lastMatches.filter(isFinished)),
+    (minRound(nextMatches) ?? 1) - 1
+  );
+  const remainingRounds = inferredTotalRounds
+    ? Math.max(inferredTotalRounds - completedRoundCount, 0)
+    : (nextMatches.length > 0 ? 1 : 0);
 
   const isLoading = standingsStatus === "loading" || matchesStatus === "loading";
   const isOffline = standingsStatus === "error" || matchesStatus === "error";
@@ -325,7 +426,11 @@ const Dashboard = () => {
                     {match.homeScore} - {match.awayScore}
                   </span>
                   <span>{match.awayTeam}</span>
-                  {match.minute && <span className="text-xs text-muted-foreground">{match.minute}</span>}
+                  {(match.minute || match.period) && (
+                    <span className="text-xs text-muted-foreground">
+                      {[match.period, match.minute].filter(Boolean).join(" - ")}
+                    </span>
+                  )}
                 </div>
               </div>
             ))}
@@ -339,8 +444,13 @@ const Dashboard = () => {
           <p className="mt-0.5 font-display text-lg font-bold text-foreground">{standings.length || "-"}</p>
         </Card>
         <Card className="p-3">
-          <p className="text-xs text-muted-foreground">Proximas partidas</p>
-          <p className="mt-0.5 font-display text-lg font-bold text-foreground">{nextMatches.length || "-"}</p>
+          <p className="text-xs text-muted-foreground">Rodadas faltando</p>
+          <p className="mt-0.5 font-display text-lg font-bold text-foreground">{remainingRounds || "-"}</p>
+          {completedRoundCount > 0 && (
+            <p className="text-[10px] text-muted-foreground">
+              {completedRoundCount} de {inferredTotalRounds || "?"} rodadas disputadas
+            </p>
+          )}
         </Card>
         <Card className="p-3">
           <p className="text-xs text-muted-foreground">Ao vivo</p>
@@ -426,14 +536,14 @@ const Dashboard = () => {
         <Card className="p-4">
           <SectionHeader
             icon={CalendarDays}
-            title="Proximas partidas"
-            subtitle="Jogos agendados para a competicao selecionada"
+            title="Proximas partidas favoritas"
+            subtitle="Agenda dos times favoritos em todos os campeonatos"
           />
-          {nextMatches.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhuma partida futura encontrada.</p>
+          {favoriteTeamMatches.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nenhuma partida futura encontrada para seus favoritos.</p>
           ) : (
             <div className="space-y-2">
-              {nextMatches.slice(0, 8).map((match) => (
+              {favoriteTeamMatches.slice(0, 10).map((match) => (
                 <MatchRow key={match.id} match={match} />
               ))}
             </div>

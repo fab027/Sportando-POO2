@@ -15,13 +15,23 @@ const PositionBadge = ({ pos }: { pos: number }) => {
 const TeamsPage = () => {
   const { sport, league } = useSport();
   const [search, setSearch] = useState("");
-  const [filters, setFilters] = useState<Record<string, string>>({ zone: "all", sortBy: "points" });
+  const [filters, setFilters] = useState<Record<string, string>>({ zone: "all", sortBy: "points", table: "total" });
   const { toggleFavorite, isFavorite } = useFavorites();
 
-  const { data: standings, status, error, refetch } = useStandings(league.sofascoreUrl);
+  const tableType = filters.table === "home" || filters.table === "away" ? filters.table : "total";
+  const { data: standings, status, error, refetch } = useStandings(league.sofascoreUrl, tableType);
   const isLoading = status === "loading";
 
   const filterDefs: FilterDef[] = [
+    {
+      key: "table",
+      label: "Tabela",
+      options: [
+        { value: "total", label: "Geral" },
+        { value: "home", label: "Mandante" },
+        { value: "away", label: "Visitante" },
+      ],
+    },
     {
       key: "zone",
       label: "Zona",
@@ -39,6 +49,8 @@ const TeamsPage = () => {
         { value: "wins", label: "Vitórias" },
         { value: "scored", label: "Gols pró" },
         { value: "conceded", label: "Gols sofridos (asc)" },
+        { value: "defense", label: "Melhor defesa" },
+        { value: "goalDiff", label: "Saldo de gols" },
       ],
     },
   ];
@@ -58,6 +70,8 @@ const TeamsPage = () => {
       case "wins": sorted.sort((a, b) => b.wins - a.wins); break;
       case "scored": sorted.sort((a, b) => b.scored - a.scored); break;
       case "conceded": sorted.sort((a, b) => a.conceded - b.conceded); break;
+      case "defense": sorted.sort((a, b) => a.conceded - b.conceded || b.points - a.points); break;
+      case "goalDiff": sorted.sort((a, b) => (b.scored - b.conceded) - (a.scored - a.conceded)); break;
       default: sorted.sort((a, b) => a.position - b.position);
     }
     return sorted;
@@ -106,7 +120,7 @@ const TeamsPage = () => {
         filters={filterDefs}
         values={filters}
         onChange={(k, v) => setFilters((p) => ({ ...p, [k]: v }))}
-        onClear={() => setFilters({ zone: "all", sortBy: "points" })}
+        onClear={() => setFilters({ zone: "all", sortBy: "points", table: "total" })}
       />
 
       {processed.length > 0 && (
@@ -132,7 +146,18 @@ const TeamsPage = () => {
                 return (
                   <tr key={t.id} className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
                     <td className="px-4 py-3"><PositionBadge pos={t.position} /></td>
-                    <td className="px-4 py-3 font-medium text-foreground">{t.name}</td>
+                    <td className="px-4 py-3 font-medium text-foreground">
+                      <div className="flex items-center gap-2">
+                        {t.imageUrl ? (
+                          <img src={t.imageUrl} alt="" className="h-6 w-6 object-contain" loading="lazy" />
+                        ) : (
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-sport/10 text-[10px] text-sport">
+                            {t.shortName}
+                          </span>
+                        )}
+                        <span>{t.name}</span>
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-center text-muted-foreground">{t.played}</td>
                     <td className="px-4 py-3 text-center text-muted-foreground">{t.wins}</td>
                     <td className="px-4 py-3 text-center text-muted-foreground">{t.draws}</td>
