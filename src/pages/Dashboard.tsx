@@ -4,6 +4,7 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  Clock3,
   Goal,
   Globe2,
   Handshake,
@@ -14,22 +15,14 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
-import { useLiveMatches, useMatches, useStandings, useTopPlayers } from "@/hooks/useSofaScoreData";
-import type { SofaMatch, SofaTeamStanding, SofaTopPlayer } from "@/services/sofaScoreService";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { useLiveMatches, useMatches, useTodayMatches, useTopPlayers } from "@/hooks/useSofaScoreData";
+import type { SofaLiveMatch, SofaMatch, SofaTopPlayer, TodayMatch } from "@/services/sofaScoreService";
 import { sofaScoreService } from "@/services/sofaScoreService";
 import { useFavorites } from "@/contexts/FavoritesContext";
 
 const LIVE_COUNTRIES_STORAGE_KEY = "sportando.dashboard.liveCountries";
-
-const KNOWN_TOTAL_ROUNDS: Record<string, number> = {
-  "brasileirao-a": 38,
-  "brasileirao-b": 38,
-  "premier-league": 38,
-  "la-liga": 38,
-  "serie-a-it": 38,
-  bundesliga: 34,
-  "ligue-1": 34,
-};
+const TODAY_COUNTRIES_STORAGE_KEY = "sportando.dashboard.todayCountries";
 
 const formatDateTime = (ts: number) =>
   new Date(ts * 1000).toLocaleString("pt-BR", {
@@ -58,14 +51,30 @@ const formatRound = (match: SofaMatch) => {
   return match.tournament;
 };
 
-const maxRound = (matches: SofaMatch[]) =>
-  matches.reduce((max, match) => (match.roundInfo ? Math.max(max, match.roundInfo) : max), 0);
+const hasMatchScore = (match: Pick<SofaMatch | TodayMatch | SofaLiveMatch, "homeScore" | "awayScore">) =>
+  typeof match.homeScore === "number" && typeof match.awayScore === "number";
 
-const minRound = (matches: SofaMatch[]) =>
-  matches.reduce<number | null>(
-    (min, match) => (match.roundInfo ? Math.min(min ?? match.roundInfo, match.roundInfo) : min),
-    null
-  );
+const normalizeClockPart = (value?: string | null) => {
+  const text = String(value || "").trim();
+  if (!text || /^(started|live|in progress|ao vivo)$/i.test(text)) return null;
+  if (/^(ht|halftime)$/i.test(text) || /interval/i.test(text)) return "Intervalo";
+  if (/^(1st half|first half)$/i.test(text)) return "1o tempo";
+  if (/^(2nd half|second half)$/i.test(text)) return "2o tempo";
+  return text;
+};
+
+const formatLiveClock = (match: SofaLiveMatch) => {
+  const period = normalizeClockPart(match.period);
+  const minute = normalizeClockPart(match.minute);
+  if (period && minute && period.toLowerCase() !== minute.toLowerCase()) return `${period} - ${minute}`;
+  return minute || period || "Ao vivo";
+};
+
+const countrySelectionLabel = (countries: string[]) => {
+  if (countries.length === 0) return "Todos os paises";
+  if (countries.length === 1) return countries[0];
+  return `${countries.length} paises`;
+};
 
 const Card = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => (
   <section className={`rounded-xl border border-border bg-card ${className}`}>{children}</section>
@@ -91,6 +100,107 @@ const SectionHeader = ({
   </div>
 );
 
+const CountrySelector = ({
+  label,
+  options,
+  selectedCountries,
+  onClear,
+  onToggle,
+  emptyMessage,
+}: {
+  label: string;
+  options: string[];
+  selectedCountries: string[];
+  onClear: () => void;
+  onToggle: (country: string) => void;
+  emptyMessage: string;
+}) => {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((current) => !current)}
+        className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
+      >
+        <Globe2 className="h-3.5 w-3.5 text-sport" />
+        {label}
+        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-2 w-64 rounded-xl border border-border bg-card p-2 shadow-lg">
+          <button
+            onClick={() => {
+              onClear();
+              setOpen(false);
+            }}
+            className={`mb-1 flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors hover:bg-secondary ${
+              selectedCountries.length === 0 ? "text-sport" : "text-foreground"
+            }`}
+          >
+            Todos os paises
+            {selectedCountries.length === 0 && <Check className="h-3.5 w-3.5" />}
+          </button>
+          <div className="max-h-56 overflow-y-auto">
+            {options.length === 0 ? (
+              <p className="px-2.5 py-2 text-xs text-muted-foreground">{emptyMessage}</p>
+            ) : (
+              options.map((country) => {
+                const selected = selectedCountries.includes(country);
+                return (
+                  <button
+                    key={country}
+                    onClick={() => onToggle(country)}
+                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors hover:bg-secondary ${
+                      selected ? "text-sport" : "text-foreground"
+                    }`}
+                  >
+                    {country}
+                    {selected && <Check className="h-3.5 w-3.5" />}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const CollapsibleCard = ({
+  title,
+  subtitle,
+  icon,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  icon: typeof Trophy;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) => {
+  const [open, setOpen] = useState(defaultOpen);
+  const Icon = icon;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="self-start rounded-xl border border-border bg-card">
+      <CollapsibleTrigger className="flex w-full items-start justify-between gap-3 p-4 text-left">
+        <div>
+          <h2 className="flex items-center gap-2 font-display text-sm font-bold text-foreground">
+            <Icon className="h-4 w-4 text-sport" />
+            {title}
+          </h2>
+          {subtitle && <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p>}
+        </div>
+        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="border-t border-border px-4 pb-4 pt-3">{children}</CollapsibleContent>
+    </Collapsible>
+  );
+};
+
 const MatchRow = ({ match, showScore = false }: { match: SofaMatch; showScore?: boolean }) => (
   <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
     <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
@@ -98,9 +208,9 @@ const MatchRow = ({ match, showScore = false }: { match: SofaMatch; showScore?: 
         <p className="text-xs text-muted-foreground">{formatRound(match)}</p>
         <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
           <span>{match.homeTeam}</span>
-          {showScore ? (
+          {showScore && hasMatchScore(match) ? (
             <span className="rounded-md bg-background px-2 py-0.5 font-display text-sm">
-              {match.homeScore ?? 0} - {match.awayScore ?? 0}
+              {match.homeScore} - {match.awayScore}
             </span>
           ) : (
             <span className="text-xs font-medium text-muted-foreground">vs</span>
@@ -116,9 +226,54 @@ const MatchRow = ({ match, showScore = false }: { match: SofaMatch; showScore?: 
   </div>
 );
 
+const LiveMatchCard = ({ match }: { match: SofaLiveMatch }) => {
+  const clock = formatLiveClock(match);
+
+  return (
+    <div className="rounded-lg border border-border bg-card px-3 py-2">
+      <p className="text-xs text-muted-foreground">
+        {match.country ? `${match.country} - ` : ""}
+        {match.tournament}
+      </p>
+      <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+        <span>{match.homeTeam}</span>
+        <span className="rounded-md bg-destructive/10 px-2 py-0.5 font-display text-sm text-destructive">
+          {match.homeScore} - {match.awayScore}
+        </span>
+        <span>{match.awayTeam}</span>
+        <span className="text-xs text-muted-foreground">{clock}</span>
+      </div>
+    </div>
+  );
+};
+
+const TodayMatchCard = ({ match }: { match: TodayMatch }) => (
+  <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
+    <p className="truncate text-xs text-muted-foreground">
+      {match.country ? `${match.country} - ` : ""}
+      {match.tournament}
+    </p>
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+      <span>{match.homeTeam}</span>
+      {hasMatchScore(match) ? (
+        <span className="rounded-md bg-background px-2 py-0.5 font-display text-sm">
+          {match.homeScore} - {match.awayScore}
+        </span>
+      ) : (
+        <span className="text-xs font-medium text-muted-foreground">{match.time || "vs"}</span>
+      )}
+      <span>{match.awayTeam}</span>
+    </div>
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <span>{formatStatus(match.status)}</span>
+      {match.venue && <span>{match.venue}</span>}
+    </div>
+  </div>
+);
+
 const PlayerRanking = ({
   title,
-  icon: Icon,
+  icon,
   metricLabel,
   players,
   loading,
@@ -129,15 +284,14 @@ const PlayerRanking = ({
   players: SofaTopPlayer[];
   loading: boolean;
 }) => (
-  <Card className="p-4">
-    <SectionHeader icon={Icon} title={title} subtitle="Ranking da temporada selecionada" />
+  <CollapsibleCard icon={icon} title={title} subtitle="Ranking da temporada selecionada" defaultOpen={false}>
     {loading && players.length === 0 ? (
       <p className="text-sm text-muted-foreground">Carregando ranking...</p>
     ) : players.length === 0 ? (
       <p className="text-sm text-muted-foreground">Nenhum jogador encontrado para esta competicao.</p>
     ) : (
       <div className="space-y-1.5">
-        {players.slice(0, 6).map((player, index) => (
+        {players.slice(0, 8).map((player, index) => (
           <div key={player.id} className="grid grid-cols-[1.75rem_2.25rem_1fr_auto] items-center gap-2 rounded-lg bg-secondary/30 px-3 py-1.5">
             <span className="font-mono text-xs text-muted-foreground">{index + 1}</span>
             {player.imageUrl ? (
@@ -167,11 +321,11 @@ const PlayerRanking = ({
         ))}
       </div>
     )}
-  </Card>
+  </CollapsibleCard>
 );
 
 const Dashboard = () => {
-  const { sport, league } = useSport();
+  const { league } = useSport();
   const { favorites } = useFavorites();
   const [favoriteAthleteTeams, setFavoriteAthleteTeams] = useState<string[]>([]);
   const [favoriteTeamMatches, setFavoriteTeamMatches] = useState<SofaMatch[]>([]);
@@ -184,13 +338,22 @@ const Dashboard = () => {
       return [];
     }
   });
-  const [countryMenuOpen, setCountryMenuOpen] = useState(false);
+  const [selectedTodayCountries, setSelectedTodayCountries] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const saved = JSON.parse(localStorage.getItem(TODAY_COUNTRIES_STORAGE_KEY) || "[]");
+      return Array.isArray(saved) ? saved.filter((item) => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  });
 
-  const { data: standings, status: standingsStatus, refetch: refetchStandings } = useStandings(league.sofascoreUrl);
   const { lastMatches, nextMatches, status: matchesStatus, refetch: refetchMatches } = useMatches(league.sofascoreUrl);
+  const { data: todayMatches, status: todayStatus, refetch: refetchToday } = useTodayMatches();
   const { data: liveMatches, status: liveStatus, refetch: refetchLive } = useLiveMatches();
   const { data: topScorers, status: scorersStatus, refetch: refetchScorers } = useTopPlayers(league.sofascoreUrl, "goals");
   const { data: topAssists, status: assistsStatus, refetch: refetchAssists } = useTopPlayers(league.sofascoreUrl, "assists");
+
   const favoriteTeamIds = useMemo(
     () => new Set(favorites.filter((fav) => fav.tipo === "equipe").map((fav) => fav.referenciaId)),
     [favorites]
@@ -200,21 +363,13 @@ const Dashboard = () => {
     [favoriteAthleteTeams, favorites]
   );
 
-  const groupedStandings = useMemo(() => {
-    const groups = new Map<string, SofaTeamStanding[]>();
-    standings.forEach((team) => {
-      const groupName = team.groupName || "Tabela geral";
-      groups.set(groupName, [...(groups.get(groupName) || []), team]);
-    });
-    return Array.from(groups.entries()).map(([name, teams]) => ({
-      name,
-      teams: teams.sort((a, b) => a.position - b.position),
-    }));
-  }, [standings]);
-
   useEffect(() => {
     localStorage.setItem(LIVE_COUNTRIES_STORAGE_KEY, JSON.stringify(selectedLiveCountries));
   }, [selectedLiveCountries]);
+
+  useEffect(() => {
+    localStorage.setItem(TODAY_COUNTRIES_STORAGE_KEY, JSON.stringify(selectedTodayCountries));
+  }, [selectedTodayCountries]);
 
   useEffect(() => {
     const athleteUrls = favorites
@@ -271,18 +426,23 @@ const Dashboard = () => {
     return liveMatches.filter((match) => selectedLiveCountries.includes(match.country || "Outros"));
   }, [liveMatches, selectedLiveCountries]);
 
-  const toggleLiveCountry = (country: string) => {
-    setSelectedLiveCountries((current) =>
-      current.includes(country) ? current.filter((item) => item !== country) : [...current, country].sort()
-    );
-  };
+  const todayCountryOptions = useMemo(
+    () =>
+      Array.from(
+        new Set([...selectedTodayCountries, ...todayMatches.map((match) => match.country || "Outros")])
+      ).sort((a, b) => a.localeCompare(b, "pt-BR")),
+    [selectedTodayCountries, todayMatches]
+  );
 
-  const liveCountryLabel =
-    selectedLiveCountries.length === 0
-      ? "Todos os paises"
-      : selectedLiveCountries.length === 1
-        ? selectedLiveCountries[0]
-        : `${selectedLiveCountries.length} paises`;
+  const selectedTodayMatches = useMemo(() => {
+    if (selectedTodayCountries.length === 0) return todayMatches;
+    return todayMatches.filter((match) => selectedTodayCountries.includes(match.country || "Outros"));
+  }, [selectedTodayCountries, todayMatches]);
+
+  const todayTournaments = useMemo(
+    () => Array.from(new Set(selectedTodayMatches.map((match) => match.tournament))).length,
+    [selectedTodayMatches]
+  );
 
   const lastCompletedRound = useMemo(() => {
     const finished = lastMatches.filter(isFinished).sort((a, b) => b.startTimestamp - a.startTimestamp);
@@ -292,28 +452,27 @@ const Dashboard = () => {
     return finished.filter((match) => match.roundInfo === anchor.roundInfo).slice(0, 12);
   }, [lastMatches]);
 
-  const lastRoundTitle = lastCompletedRound[0]?.roundInfo
-    ? `Ultima rodada concluida - Rodada ${lastCompletedRound[0].roundInfo}`
-    : "Ultimas partidas finalizadas";
-  const inferredTotalRounds =
-    KNOWN_TOTAL_ROUNDS[league.id] ||
-    (standings.length >= 10 && !groupedStandings.some((group) => group.name !== "Tabela geral")
-      ? (standings.length - 1) * 2
-      : maxRound([...lastMatches, ...nextMatches]));
-  const completedRoundCount = Math.max(
-    maxRound(lastMatches.filter(isFinished)),
-    (minRound(nextMatches) ?? 1) - 1
-  );
-  const remainingRounds = inferredTotalRounds
-    ? Math.max(inferredTotalRounds - completedRoundCount, 0)
-    : (nextMatches.length > 0 ? 1 : 0);
+  const toggleLiveCountry = (country: string) => {
+    setSelectedLiveCountries((current) =>
+      current.includes(country) ? current.filter((item) => item !== country) : [...current, country].sort()
+    );
+  };
 
-  const isLoading = standingsStatus === "loading" || matchesStatus === "loading";
-  const isOffline = standingsStatus === "error" || matchesStatus === "error";
+  const toggleTodayCountry = (country: string) => {
+    setSelectedTodayCountries((current) =>
+      current.includes(country) ? current.filter((item) => item !== country) : [...current, country].sort()
+    );
+  };
+
+  const liveCountryLabel = countrySelectionLabel(selectedLiveCountries);
+  const todayCountryLabel = countrySelectionLabel(selectedTodayCountries);
+
+  const isLoading = matchesStatus === "loading" || todayStatus === "loading";
+  const isOffline = matchesStatus === "error" || todayStatus === "error";
 
   const refreshAll = () => {
-    refetchStandings();
     refetchMatches();
+    refetchToday();
     refetchLive();
     refetchScorers();
     refetchAssists();
@@ -324,20 +483,20 @@ const Dashboard = () => {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground">
-            Dashboard - {league.flag} {league.name}
+            Dashboard - Agenda de partidas
           </h1>
           <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
             {isLoading ? (
               <>
-                <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Carregando dados do campeonato...
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Carregando partidas...
               </>
             ) : isOffline ? (
               <>
-                <WifiOff className="h-3.5 w-3.5 text-destructive" /> Dados de fallback carregados
+                <WifiOff className="h-3.5 w-3.5 text-destructive" /> Nao foi possivel atualizar todos os jogos
               </>
             ) : (
               <>
-                <Wifi className="h-3.5 w-3.5 text-sport" /> Dados atualizados via SofaScore
+                <Wifi className="h-3.5 w-3.5 text-sport" /> Jogos atualizados via SofaScore
               </>
             )}
           </p>
@@ -358,50 +517,14 @@ const Dashboard = () => {
             Ao vivo agora
           </h2>
           <div className="flex items-center gap-2">
-            <div className="relative">
-              <button
-                onClick={() => setCountryMenuOpen((open) => !open)}
-                className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
-              >
-                <Globe2 className="h-3.5 w-3.5 text-sport" />
-                {liveCountryLabel}
-                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-              </button>
-              {countryMenuOpen && (
-                <div className="absolute right-0 z-30 mt-2 w-64 rounded-xl border border-border bg-card p-2 shadow-lg">
-                  <button
-                    onClick={() => setSelectedLiveCountries([])}
-                    className={`mb-1 flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors hover:bg-secondary ${
-                      selectedLiveCountries.length === 0 ? "text-sport" : "text-foreground"
-                    }`}
-                  >
-                    Todos os paises
-                    {selectedLiveCountries.length === 0 && <Check className="h-3.5 w-3.5" />}
-                  </button>
-                  <div className="max-h-56 overflow-y-auto">
-                    {liveCountryOptions.length === 0 ? (
-                      <p className="px-2.5 py-2 text-xs text-muted-foreground">Sem paises ao vivo agora.</p>
-                    ) : (
-                      liveCountryOptions.map((country) => {
-                        const selected = selectedLiveCountries.includes(country);
-                        return (
-                          <button
-                            key={country}
-                            onClick={() => toggleLiveCountry(country)}
-                            className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors hover:bg-secondary ${
-                              selected ? "text-sport" : "text-foreground"
-                            }`}
-                          >
-                            {country}
-                            {selected && <Check className="h-3.5 w-3.5" />}
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+            <CountrySelector
+              label={liveCountryLabel}
+              options={liveCountryOptions}
+              selectedCountries={selectedLiveCountries}
+              onClear={() => setSelectedLiveCountries([])}
+              onToggle={toggleLiveCountry}
+              emptyMessage="Sem paises ao vivo agora."
+            />
             <button
               onClick={refetchLive}
               className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
@@ -418,21 +541,7 @@ const Dashboard = () => {
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">
             {selectedLiveMatches.slice(0, 8).map((match) => (
-              <div key={match.id} className="rounded-lg border border-border bg-card px-3 py-2">
-                <p className="text-xs text-muted-foreground">{match.country ? `${match.country} - ` : ""}{match.tournament}</p>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
-                  <span>{match.homeTeam}</span>
-                  <span className="rounded-md bg-destructive/10 px-2 py-0.5 font-display text-sm text-destructive">
-                    {match.homeScore} - {match.awayScore}
-                  </span>
-                  <span>{match.awayTeam}</span>
-                  {(match.minute || match.period) && (
-                    <span className="text-xs text-muted-foreground">
-                      {[match.period, match.minute].filter(Boolean).join(" - ")}
-                    </span>
-                  )}
-                </div>
-              </div>
+              <LiveMatchCard key={match.id} match={match} />
             ))}
           </div>
         )}
@@ -440,17 +549,12 @@ const Dashboard = () => {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Card className="p-3">
-          <p className="text-xs text-muted-foreground">Equipes</p>
-          <p className="mt-0.5 font-display text-lg font-bold text-foreground">{standings.length || "-"}</p>
+          <p className="text-xs text-muted-foreground">Jogos hoje</p>
+          <p className="mt-0.5 font-display text-lg font-bold text-foreground">{selectedTodayMatches.length || "-"}</p>
         </Card>
         <Card className="p-3">
-          <p className="text-xs text-muted-foreground">Rodadas faltando</p>
-          <p className="mt-0.5 font-display text-lg font-bold text-foreground">{remainingRounds || "-"}</p>
-          {completedRoundCount > 0 && (
-            <p className="text-[10px] text-muted-foreground">
-              {completedRoundCount} de {inferredTotalRounds || "?"} rodadas disputadas
-            </p>
-          )}
+          <p className="text-xs text-muted-foreground">Campeonatos hoje</p>
+          <p className="mt-0.5 font-display text-lg font-bold text-foreground">{todayTournaments || "-"}</p>
         </Card>
         <Card className="p-3">
           <p className="text-xs text-muted-foreground">Ao vivo</p>
@@ -459,63 +563,56 @@ const Dashboard = () => {
       </div>
 
       <Card className="p-4">
-        <SectionHeader
-          icon={Trophy}
-          title={`Classificacao - ${league.name}`}
-          subtitle="Tabela atualizada da competicao selecionada"
-        />
-        {standings.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Classificacao indisponivel para esta competicao.</p>
+        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="flex items-center gap-2 font-display text-sm font-bold text-foreground">
+              <Globe2 className="h-4 w-4 text-sport" />
+              Partidas de hoje pelo mundo
+            </h2>
+            <p className="mt-1 text-xs text-muted-foreground">Recorte global de jogos monitorados</p>
+          </div>
+          <CountrySelector
+            label={todayCountryLabel}
+            options={todayCountryOptions}
+            selectedCountries={selectedTodayCountries}
+            onClear={() => setSelectedTodayCountries([])}
+            onToggle={toggleTodayCountry}
+            emptyMessage="Sem paises com partidas hoje."
+          />
+        </div>
+        {todayStatus === "loading" && todayMatches.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Buscando jogos de hoje...</p>
+        ) : todayMatches.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nenhuma partida encontrada para hoje.</p>
+        ) : selectedTodayMatches.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nenhuma partida encontrada para os paises selecionados.</p>
         ) : (
-          <div className="space-y-4">
-            {groupedStandings.map((group) => (
-              <div key={group.name}>
-                {groupedStandings.length > 1 && (
-                  <h3 className="mb-2 text-sm font-semibold text-foreground">{group.name}</h3>
-                )}
-                <div className="overflow-x-auto rounded-lg border border-border">
-                  <table className="w-full text-sm">
-                    <thead className="bg-secondary/40">
-                      <tr className="text-xs uppercase text-muted-foreground">
-                        <th className="w-10 px-3 py-2 text-left">#</th>
-                        <th className="min-w-44 px-3 py-2 text-left">Time</th>
-                        <th className="px-3 py-2 text-center">J</th>
-                        <th className="px-3 py-2 text-center">V</th>
-                        {sport === "football" && <th className="px-3 py-2 text-center">E</th>}
-                        <th className="px-3 py-2 text-center">D</th>
-                        <th className="px-3 py-2 text-center">GP</th>
-                        <th className="px-3 py-2 text-center">GC</th>
-                        <th className="px-3 py-2 text-center font-bold">Pts</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {group.teams.map((team) => (
-                        <tr key={`${group.name}-${team.id}`} className="border-t border-border hover:bg-secondary/25">
-                          <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{team.position}</td>
-                          <td className="px-3 py-2 font-semibold text-foreground">{team.name}</td>
-                          <td className="px-3 py-2 text-center text-muted-foreground">{team.played}</td>
-                          <td className="px-3 py-2 text-center text-muted-foreground">{team.wins}</td>
-                          {sport === "football" && <td className="px-3 py-2 text-center text-muted-foreground">{team.draws}</td>}
-                          <td className="px-3 py-2 text-center text-muted-foreground">{team.losses}</td>
-                          <td className="px-3 py-2 text-center text-muted-foreground">{team.scored}</td>
-                          <td className="px-3 py-2 text-center text-muted-foreground">{team.conceded}</td>
-                          <td className="px-3 py-2 text-center">
-                            <span className="rounded-md bg-sport-light px-2 py-1 text-xs font-bold text-sport">
-                              {team.points}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+          <div className="grid gap-2 lg:grid-cols-2">
+            {selectedTodayMatches.slice(0, 16).map((match) => (
+              <TodayMatchCard key={match.id} match={match} />
             ))}
           </div>
         )}
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <Card className="p-4">
+        <SectionHeader
+          icon={Clock3}
+          title={`Proximas partidas - ${league.name}`}
+          subtitle="Agenda do campeonato selecionado"
+        />
+        {nextMatches.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nenhuma partida futura encontrada para este campeonato.</p>
+        ) : (
+          <div className="grid gap-2 xl:grid-cols-2">
+            {nextMatches.slice(0, 12).map((match) => (
+              <MatchRow key={match.id} match={match} />
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <div className="grid items-start gap-4 lg:grid-cols-2">
         <PlayerRanking
           title="Artilheiros"
           icon={Goal}
@@ -532,13 +629,13 @@ const Dashboard = () => {
         />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Card className="p-4">
-          <SectionHeader
-            icon={CalendarDays}
-            title="Proximas partidas favoritas"
-            subtitle="Agenda dos times favoritos em todos os campeonatos"
-          />
+      <div className="grid items-start gap-4 xl:grid-cols-2">
+        <CollapsibleCard
+          icon={CalendarDays}
+          title="Proximas partidas favoritas"
+          subtitle="Agenda dos times favoritos em todos os campeonatos"
+          defaultOpen={favoriteTeamMatches.length > 0}
+        >
           {favoriteTeamMatches.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nenhuma partida futura encontrada para seus favoritos.</p>
           ) : (
@@ -548,16 +645,16 @@ const Dashboard = () => {
               ))}
             </div>
           )}
-        </Card>
+        </CollapsibleCard>
 
-        <Card className="p-4">
-          <SectionHeader
-            icon={Shield}
-            title={lastRoundTitle}
-            subtitle="Recorte mais recente de partidas ja finalizadas"
-          />
+        <CollapsibleCard
+          icon={Shield}
+          title="Ultimas partidas finalizadas"
+          subtitle={`Recorte recente de ${league.name}`}
+          defaultOpen={false}
+        >
           {lastCompletedRound.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhuma rodada finalizada encontrada.</p>
+            <p className="text-sm text-muted-foreground">Nenhuma partida finalizada encontrada.</p>
           ) : (
             <div className="space-y-2">
               {lastCompletedRound.slice(0, 8).map((match) => (
@@ -565,7 +662,7 @@ const Dashboard = () => {
               ))}
             </div>
           )}
-        </Card>
+        </CollapsibleCard>
       </div>
     </div>
   );

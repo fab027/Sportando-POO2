@@ -54,7 +54,7 @@ export function useStandings(leagueUrl: string, tableType: "total" | "home" | "a
     } catch (e) {
       setData(getFallbackStandings(leagueUrl));
       setError(e instanceof Error ? e.message : "Erro ao carregar classificação");
-      setStatus("success");
+      setStatus("error");
     }
   }, [leagueUrl, tableType]);
 
@@ -97,7 +97,7 @@ export function useMatches(leagueUrl: string) {
       setLastMatches(fallback.lastMatches);
       setNextMatches(fallback.nextMatches);
       setError(e instanceof Error ? e.message : "Erro ao carregar partidas");
-      setStatus("success");
+      setStatus("error");
     }
   }, [leagueUrl]);
 
@@ -121,7 +121,7 @@ export function useLiveMatches() {
   const fetchData = useCallback(async () => {
     setStatus("loading");
     try {
-      const key = "live_v7_all";
+      const key = "live_v9_all";
       const hit = cache[key];
       let res: SofaLiveMatch[];
       if (hit && Date.now() - hit.ts < 15_000) {
@@ -133,6 +133,7 @@ export function useLiveMatches() {
       setData(Array.isArray(res) ? res : []);
       setStatus("success");
     } catch {
+      setData([]);
       setStatus("error");
     }
   }, []);
@@ -154,12 +155,12 @@ export function useTodayMatches() {
   const fetchData = useCallback(async () => {
     setStatus("loading");
     try {
-      const res = await cached("today_matches", () => sofaScoreService.getTodayMatches());
+      const res = await cached("today_matches_v3", () => sofaScoreService.getTodayMatches());
       setData(Array.isArray(res) && res.length > 0 ? res : getFallbackTodayMatches());
       setStatus("success");
     } catch {
       setData(getFallbackTodayMatches());
-      setStatus("success");
+      setStatus("error");
     }
   }, []);
 
@@ -187,7 +188,7 @@ export function useTopPlayers(leagueUrl: string, metric: "goals" | "assists") {
     } catch (e) {
       setData(getFallbackTopPlayers(metric));
       setError(e instanceof Error ? e.message : "Erro ao carregar ranking de jogadores");
-      setStatus("success");
+      setStatus("error");
     }
   }, [leagueUrl, metric]);
 
@@ -216,7 +217,7 @@ export function usePlayerSearch() {
       setStatus("success");
     } catch {
       setResults(getFallbackPlayerSearch(query));
-      setStatus("success");
+      setStatus("error");
     }
   }, []);
 
@@ -241,7 +242,7 @@ export function usePlayerStats(playerUrl: string | null) {
       })
       .catch(() => {
         setData(getFallbackPlayerDetail(playerUrl));
-        setStatus("success");
+        setStatus("error");
       });
   }, [playerUrl]);
 
@@ -290,7 +291,7 @@ export function useTeamPlayers(teamName: string | null) {
       })
       .catch(() => {
         setData(getFallbackTeamPlayers(teamName));
-        setStatus("success");
+        setStatus("error");
       });
   }, [teamName]);
 

@@ -254,8 +254,6 @@ const squadSchema = {
 };
 
 const SOFASCORE_BASE_URL = "https://www.sofascore.com/api/v1";
-const TOP_FOOTBALL_UNIQUE_TOURNAMENTS = new Set([17, 8, 23, 35, 34, 325, 390, 373, 384, 480]);
-
 const sofaFetch = async (path: string): Promise<any> => {
   const res = await fetch(`${SOFASCORE_BASE_URL}${path}`, {
     headers: {
@@ -322,15 +320,32 @@ const mapSofaEvent = (event: any) => ({
   venue: event.venue?.stadium?.name || event.venue?.name || event.venue?.city?.name || null,
 });
 
-const getLiveMinute = (event: any): string | null => {
-  const description = String(event?.status?.description || "").toLowerCase();
-  if (description.includes("half")) return "HT";
+const eventCountry = (event: any) =>
+  event?.tournament?.category?.name ||
+  event?.tournament?.uniqueTournament?.category?.name ||
+  event?.category?.name ||
+  "Outros";
 
-  const time = event?.statusTime || event?.time;
-  const timestamp = Number(time?.timestamp || time?.currentPeriodStartTimestamp || 0);
-  const initial = Number(time?.initial || 0);
-  const max = Number(time?.max || 0);
-  if (!timestamp) return event?.status?.description || null;
+const getLiveMinute = (event: any): string | null => {
+  const description = String(event?.status?.description || "").trim();
+  const normalizedDescription = description.toLowerCase();
+  if (normalizedDescription.includes("half") || normalizedDescription.includes("interval")) return null;
+
+  const time = event?.time || {};
+  const statusTime = event?.statusTime || {};
+  const timestamp = Number(
+    time?.currentPeriodStartTimestamp ||
+      statusTime?.currentPeriodStartTimestamp ||
+      statusTime?.timestamp ||
+      time?.timestamp ||
+      0
+  );
+  const periodNumber = Number(time?.period ?? statusTime?.period ?? 0);
+  const inferredPeriod = periodNumber || (Number(time?.initial ?? statusTime?.initial ?? 0) >= 45 * 60 ? 2 : 1);
+  const initialFromApi = Number(time?.initial ?? statusTime?.initial ?? 0);
+  const initial = initialFromApi || (inferredPeriod === 2 ? 45 * 60 : 0);
+  const max = Number(time?.max ?? statusTime?.max ?? 0) || (inferredPeriod === 2 ? 90 * 60 : 45 * 60);
+  if (!timestamp) return null;
 
   const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timestamp);
   const total = initial + elapsed;
@@ -342,10 +357,12 @@ const getLiveMinute = (event: any): string | null => {
 
 const getLivePeriod = (event: any): string | null => {
   const description = String(event?.status?.description || "").toLowerCase();
-  if (description.includes("half")) return "Intervalo";
-  const time = event?.statusTime || event?.time;
-  const initial = Number(time?.initial || 0);
-  const periodNumber = Number(time?.period || event?.statusTime?.period || 0);
+  if (description.includes("half") || description.includes("interval")) return "Intervalo";
+  const time = event?.time || {};
+  const statusTime = event?.statusTime || {};
+  const periodNumber = Number(time?.period ?? statusTime?.period ?? 0);
+  const initialFromApi = Number(time?.initial ?? statusTime?.initial ?? 0);
+  const initial = initialFromApi || (periodNumber === 2 ? 45 * 60 : 0);
   if (periodNumber === 2 || initial >= 45 * 60) return "2o tempo";
   if (periodNumber === 1 || event?.status?.type === "inprogress") return "1o tempo";
   return event?.status?.description || null;
@@ -366,6 +383,7 @@ const mapSofaLiveEvent = (event: any) => ({
   period: getLivePeriod(event),
   tournament:
     event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
+  country: eventCountry(event),
 });
 
 const todayLocalIso = () =>
@@ -688,9 +706,6 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
       const events = Array.isArray(data?.events) ? data.events : [];
       result = events
         .filter((event: any) => event?.status?.type === "inprogress")
-        .filter((event: any) =>
-          TOP_FOOTBALL_UNIQUE_TOURNAMENTS.has(event?.tournament?.uniqueTournament?.id)
-        )
         .map(mapSofaLiveEvent);
 
       return new Response(JSON.stringify(result), {
@@ -767,9 +782,6 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
       const data = await sofaFetch(`/sport/football/scheduled-events/${date}`);
       const events = Array.isArray(data?.events) ? data.events : [];
       result = events
-        .filter((event: any) =>
-          TOP_FOOTBALL_UNIQUE_TOURNAMENTS.has(event?.tournament?.uniqueTournament?.id)
-        )
         .sort((a: any, b: any) => (a.startTimestamp || 0) - (b.startTimestamp || 0))
         .map((event: any) => {
           const mapped = mapSofaEvent(event);
@@ -786,13 +798,14 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
             status: mapped.status,
             time:
               mapped.status === "Live"
-                ? getLiveMinute(event)
+                ? getLiveMinute(event) || getLivePeriod(event)
                 : new Date(mapped.startTimestamp * 1000).toLocaleTimeString("pt-BR", {
                     timeZone: "America/Sao_Paulo",
                     hour: "2-digit",
                     minute: "2-digit",
                   }),
             tournament: mapped.tournament,
+            country: eventCountry(event),
             venue: mapped.venue,
           };
         });

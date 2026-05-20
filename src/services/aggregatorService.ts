@@ -62,17 +62,6 @@ const isNumericValue = (value: unknown) => {
 const sourceInsight = (league: League, seasonName: string) =>
   `Fonte: SofaScore API, ${league.name}${seasonName ? ` ${seasonName}` : ""}. Dados consultados em tempo real.`;
 
-const TRUSTED_PLAYER_YEAR_TOTALS: Record<string, Record<string, { matches: number; goals: number; source: string; url: string }>> = {
-  neymar: {
-    "2026": {
-      matches: 14,
-      goals: 6,
-      source: "ogol",
-      url: "https://www.ogol.com.br/jogador/neymar/54814",
-    },
-  },
-};
-
 const playerYearQuestion = (question: string) => {
   const q = normalize(question);
   const year = q.match(/\b(20\d{2}|19\d{2})\b/)?.[1];
@@ -95,14 +84,7 @@ const playerYearQuestion = (question: string) => {
     .replace(/[?!.]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const ogolUrl = question.match(/https?:\/\/(?:www\.)?ogol\.com\.br\/jogador\/[^\s)]+/i)?.[0] || null;
-  return cleaned.length >= 3 ? { playerQuery: cleaned, year, metric, ogolUrl } : null;
-};
-
-const trustedPlayerYearTotal = (playerQuery: string, year: string) => {
-  const normalizedPlayer = normalize(playerQuery);
-  const key = Object.keys(TRUSTED_PLAYER_YEAR_TOTALS).find((name) => normalizedPlayer.includes(name));
-  return key ? TRUSTED_PLAYER_YEAR_TOTALS[key]?.[year] || null : null;
+  return cleaned.length >= 3 ? { playerQuery: cleaned, year, metric } : null;
 };
 
 const playerQueryCandidates = (playerQuery: string) => {
@@ -128,30 +110,6 @@ const isNationalTeamTournament = (name: string) =>
 const answerPlayerYearQuestion = async (question: string): Promise<DashboardData | null> => {
   const parsed = playerYearQuestion(question);
   if (!parsed) return null;
-  const trusted = playerQueryCandidates(parsed.playerQuery)
-    .map((candidate) => trustedPlayerYearTotal(candidate, parsed.year))
-    .find(Boolean);
-  if (trusted && (parsed.metric === "goals" || parsed.metric === "matchesPlayed")) {
-    const metricLabel: Record<string, string> = {
-      goals: "Gols",
-      matchesPlayed: "Partidas",
-    };
-    return {
-      titulo: `${metricLabel[parsed.metric]} de ${parsed.playerQuery.replace(/\b\w/g, (c) => c.toUpperCase())} em ${parsed.year}`,
-      descricao: `Total anual validado em fonte confiavel (${trusted.source})`,
-      tipo: "tabela",
-      labels: [`${parsed.year} - Total anual`],
-      datasets: [
-        { nome: "Jogos", dados: [trusted.matches] },
-        { nome: "Gols", dados: [trusted.goals] },
-      ],
-      insights: [
-        `${parsed.playerQuery.replace(/\b\w/g, (c) => c.toUpperCase())} tem ${trusted.goals} gols em ${trusted.matches} jogos em ${parsed.year}.`,
-        `Fonte preferencial: ${trusted.source} (${trusted.url}).`,
-        `A consulta anual evita somar recortes de competicoes de selecao quando a pergunta pede total do jogador no ano.`,
-      ],
-    };
-  }
   const player = await searchPlayerFromQuestion(parsed.playerQuery);
   if (!player?.url) return null;
   const detail = await sofaScoreService.getPlayerStats(player.url);
@@ -179,7 +137,7 @@ const answerPlayerYearQuestion = async (question: string): Promise<DashboardData
       nationalRows.length
         ? `Registros de selecao/competicoes internacionais foram separados para evitar inflar o total anual: ${nationalRows.map((row) => row.tournament).join(", ")}.`
         : "Consulta feita diretamente no perfil do atleta, nao em ranking de campeonato.",
-      "Quando houver fonte confiavel complementar (ex.: ogol), ela deve prevalecer para totais anuais.",
+      "Totais anuais sao calculados a partir dos registros retornados pelo perfil do atleta.",
     ],
   };
 };

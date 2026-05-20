@@ -5,7 +5,6 @@ const SPORTS_DATA_URL = `${SUPABASE_URL}/functions/v1/sports-data`;
 const SOFASCORE_PROXY_URL = "/sofascore-api";
 const SPORTS_DATA_TIMEOUT_MS = 4000;
 
-const TOP_FOOTBALL_TOURNAMENTS = new Set([17, 8, 23, 35, 34, 325, 390, 373, 384, 480]);
 const teamImageUrl = (teamId?: number | null) =>
   teamId ? `https://api.sofascore.app/api/v1/team/${teamId}/image` : null;
 const playerImageUrl = (playerId?: number | null) =>
@@ -61,20 +60,34 @@ function mapEvent(event: any): SofaMatch {
 }
 
 function getLiveClock(event: any) {
-  const description = String(event?.status?.description || "").toLowerCase();
-  if (description.includes("half")) return { minute: "Intervalo", period: "Intervalo" };
-  const time = event?.statusTime || event?.time;
-  const timestamp = Number(time?.timestamp || time?.currentPeriodStartTimestamp || 0);
-  const initial = Number(time?.initial || 0);
-  const max = Number(time?.max || 0);
-  const periodNumber = Number(time?.period || event?.statusTime?.period || 0);
+  const description = String(event?.status?.description || "").trim();
+  const normalizedDescription = description.toLowerCase();
+  if (normalizedDescription.includes("half") || normalizedDescription.includes("interval")) {
+    return { minute: null, period: "Intervalo" };
+  }
+
+  const time = event?.time || {};
+  const statusTime = event?.statusTime || {};
+  const timestamp = Number(
+    time?.currentPeriodStartTimestamp ||
+      statusTime?.currentPeriodStartTimestamp ||
+      statusTime?.timestamp ||
+      time?.timestamp ||
+      0
+  );
+  const periodNumber = Number(time?.period ?? statusTime?.period ?? 0);
+  const inferredPeriod = periodNumber || (Number(time?.initial ?? statusTime?.initial ?? 0) >= 45 * 60 ? 2 : 1);
+  const initialFromApi = Number(time?.initial ?? statusTime?.initial ?? 0);
+  const initial = initialFromApi || (inferredPeriod === 2 ? 45 * 60 : 0);
+  const max = Number(time?.max ?? statusTime?.max ?? 0) || (inferredPeriod === 2 ? 90 * 60 : 45 * 60);
   const period =
-    periodNumber === 2 || initial >= 45 * 60
+    inferredPeriod === 2 || initial >= 45 * 60
       ? "2o tempo"
-      : periodNumber === 1 || event?.status?.type === "inprogress"
+      : inferredPeriod === 1 || event?.status?.type === "inprogress"
         ? "1o tempo"
-        : event?.status?.description || null;
-  if (!timestamp) return { minute: event?.status?.description || null, period };
+        : description || null;
+  if (!timestamp) return { minute: null, period };
+
   const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timestamp);
   const total = initial + elapsed;
   const minute = Math.max(1, Math.floor(total / 60) + 1);
@@ -334,7 +347,6 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
     const events = Array.isArray(data?.events) ? data.events : [];
     return events
       .filter((event: any) => event?.status?.type === "inprogress")
-      .filter((event: any) => TOP_FOOTBALL_TOURNAMENTS.has(event?.tournament?.uniqueTournament?.id))
       .map((event: any): SofaLiveMatch => ({
         id: event.id,
         homeTeamId: event.homeTeam?.id || null,
@@ -357,10 +369,10 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
     const data = await sofaFetch(`/sport/football/scheduled-events/${todayLocalIso()}`);
     const events = Array.isArray(data?.events) ? data.events : [];
     return events
-      .filter((event: any) => TOP_FOOTBALL_TOURNAMENTS.has(event?.tournament?.uniqueTournament?.id))
       .sort((a: any, b: any) => (a.startTimestamp || 0) - (b.startTimestamp || 0))
       .map((event: any): TodayMatch => {
         const mapped = mapEvent(event);
+        const liveClock = getLiveClock(event);
         return {
           id: mapped.id,
           homeTeamId: mapped.homeTeamId,
@@ -374,13 +386,14 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
           status: mapped.status,
           time:
             mapped.status === "Live"
-              ? getLiveClock(event).minute
+              ? liveClock.minute || liveClock.period
               : new Date(mapped.startTimestamp * 1000).toLocaleTimeString("pt-BR", {
                   timeZone: "America/Sao_Paulo",
                   hour: "2-digit",
                   minute: "2-digit",
                 }),
           tournament: mapped.tournament,
+          country: eventCountry(event),
           venue: mapped.venue,
         };
       });
@@ -611,6 +624,7 @@ export type TodayMatch = {
   status: string;
   time: string | null;
   tournament: string;
+  country?: string;
   venue?: string | null;
 };
 

@@ -19,7 +19,7 @@ import {
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/equipes", label: "Equipes", icon: Trophy },
+  { to: "/equipes", label: "Classificacao", icon: Trophy },
   { to: "/atletas", label: "Atletas", icon: Users },
   { to: "/partidas", label: "Partidas", icon: CalendarDays },
   { to: "/previsoes", label: "Notícias", icon: Newspaper },
