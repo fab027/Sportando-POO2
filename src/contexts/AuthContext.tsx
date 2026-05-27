@@ -9,7 +9,16 @@ export interface Profile {
   user_id: string;
   nome: string;
   sport_profile: SportProfile;
+  avatar_url?: string | null;
+  bio?: string | null;
 }
+
+type ProfileUpdateInput = {
+  nome?: string;
+  sportProfile?: SportProfile;
+  avatarUrl?: string | null;
+  bio?: string | null;
+};
 
 interface AuthContextType {
   user: User | null;
@@ -23,6 +32,7 @@ interface AuthContextType {
     senha: string,
     sportProfile: SportProfile
   ) => Promise<{ error: string | null }>;
+  updateProfile: (input: ProfileUpdateInput) => Promise<{ error: string | null }>;
   logout: () => Promise<void>;
   isAuthenticated: boolean;
 }
@@ -39,6 +49,8 @@ type LocalAuthUser = {
   senha: string;
   nome: string;
   sport_profile: SportProfile;
+  avatar_url?: string | null;
+  bio?: string | null;
 };
 
 const isFetchError = (error: unknown) => {
@@ -76,6 +88,8 @@ const toLocalUser = (account: LocalAuthUser): User =>
     user_metadata: {
       nome: account.nome,
       sport_profile: account.sport_profile,
+      avatar_url: account.avatar_url || null,
+      bio: account.bio || null,
     },
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -106,6 +120,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       user_id: account.id,
       nome: account.nome,
       sport_profile: account.sport_profile,
+      avatar_url: account.avatar_url || null,
+      bio: account.bio || null,
     });
     localStorage.setItem(LOCAL_AUTH_SESSION_KEY, account.id);
   };
@@ -133,7 +149,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .maybeSingle()
       .then(async ({ data }) => {
         if (data) {
-          setProfile(data as Profile);
+          setProfile({
+            ...(data as Profile),
+            avatar_url: (authUser.user_metadata?.avatar_url as string | undefined) || null,
+            bio: (authUser.user_metadata?.bio as string | undefined) || null,
+          });
           return;
         }
 
@@ -254,6 +274,70 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { error: null };
   };
 
+  const updateProfile = async ({ nome, sportProfile, avatarUrl, bio }: ProfileUpdateInput) => {
+    if (!user) return { error: "Usuario nao autenticado." };
+
+    const nextNome = (nome ?? profile?.nome ?? user.user_metadata?.nome ?? user.email?.split("@")[0] ?? "Usuario").trim();
+    const nextSportProfile = sportProfile ?? profile?.sport_profile ?? "futebol";
+    const nextAvatarUrl = avatarUrl?.trim() || null;
+    const nextBio = bio?.trim() || null;
+
+    if (user.app_metadata?.provider === "local") {
+      const users = readLocalUsers();
+      const existing = users.find((item) => item.id === user.id);
+      if (!existing) return { error: "Conta local nao encontrada." };
+
+      const updated: LocalAuthUser = {
+        ...existing,
+        nome: nextNome,
+        sport_profile: nextSportProfile,
+        avatar_url: nextAvatarUrl,
+        bio: nextBio,
+      };
+      writeLocalUsers(users.map((item) => (item.id === user.id ? updated : item)));
+      applyLocalSession(updated);
+      return { error: null };
+    }
+
+    try {
+      const metadata = {
+        ...user.user_metadata,
+        nome: nextNome,
+        sport_profile: nextSportProfile,
+        avatar_url: nextAvatarUrl,
+        bio: nextBio,
+      };
+      const { data: authData, error: authError } = await supabase.auth.updateUser({ data: metadata });
+      if (authError) return { error: authError.message };
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .update({ nome: nextNome, sport_profile: nextSportProfile })
+        .eq("user_id", user.id)
+        .select("*")
+        .maybeSingle();
+
+      if (error) return { error: error.message };
+
+      if (authData.user) setUser(authData.user);
+      setProfile({
+        ...((data as Profile | null) || profile || {
+          id: user.id,
+          user_id: user.id,
+          nome: nextNome,
+          sport_profile: nextSportProfile,
+        }),
+        nome: nextNome,
+        sport_profile: nextSportProfile,
+        avatar_url: nextAvatarUrl,
+        bio: nextBio,
+      });
+      return { error: null };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "Erro ao atualizar perfil." };
+    }
+  };
+
   const logout = async () => {
     try {
       await supabase.auth.signOut();
@@ -275,6 +359,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loading,
         login,
         register,
+        updateProfile,
         logout,
         isAuthenticated: !!session || !!user,
       }}

@@ -24,10 +24,11 @@ import {
 // Simple in-memory cache (TTL 5 min)
 const cache: Record<string, { data: unknown; ts: number }> = {};
 const TTL = 5 * 60 * 1000;
+type FetchOptions = { force?: boolean };
 
-function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
+function cached<T>(key: string, fn: () => Promise<T>, force = false): Promise<T> {
   const hit = cache[key];
-  if (hit && Date.now() - hit.ts < TTL) return Promise.resolve(hit.data as T);
+  if (!force && hit && Date.now() - hit.ts < TTL) return Promise.resolve(hit.data as T);
   return fn().then((data) => {
     cache[key] = { data, ts: Date.now() };
     return data;
@@ -72,12 +73,12 @@ export function useMatches(leagueUrl: string) {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (options?: FetchOptions) => {
     setStatus("loading");
     try {
       const [lastRaw, nextRaw] = await Promise.all([
-        cached(`last_v6_${leagueUrl}`, () => sofaScoreService.getLastMatches(leagueUrl)),
-        cached(`next_v6_${leagueUrl}`, () => sofaScoreService.getNextMatches(leagueUrl)),
+        cached(`last_v6_${leagueUrl}`, () => sofaScoreService.getLastMatches(leagueUrl), options?.force),
+        cached(`next_v6_${leagueUrl}`, () => sofaScoreService.getNextMatches(leagueUrl), options?.force),
       ]);
       const last = Array.isArray(lastRaw) ? lastRaw : [];
       const next = Array.isArray(nextRaw) ? nextRaw : [];
@@ -114,17 +115,17 @@ export function useMatches(leagueUrl: string) {
 }
 
 // ─── Live Matches ─────────────────────────────────────────────────────────────
-export function useLiveMatches() {
+export function useLiveMatches(pollIntervalMs = 30_000) {
   const [data, setData] = useState<SofaLiveMatch[]>([]);
   const [status, setStatus] = useState<Status>("idle");
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (options?: FetchOptions) => {
     setStatus("loading");
     try {
-      const key = "live_v9_all";
+      const key = "live_v10_all";
       const hit = cache[key];
       let res: SofaLiveMatch[];
-      if (hit && Date.now() - hit.ts < 15_000) {
+      if (!options?.force && hit && Date.now() - hit.ts < 15_000) {
         res = hit.data as SofaLiveMatch[];
       } else {
         res = await sofaScoreService.getLiveMatches();
@@ -139,10 +140,11 @@ export function useLiveMatches() {
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 30_000);
+    void fetchData();
+    if (pollIntervalMs <= 0) return undefined;
+    const interval = window.setInterval(() => void fetchData(), pollIntervalMs);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, pollIntervalMs]);
 
   return { data, status, refetch: fetchData };
 }
@@ -152,10 +154,10 @@ export function useTodayMatches() {
   const [data, setData] = useState<TodayMatch[]>([]);
   const [status, setStatus] = useState<Status>("idle");
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (options?: FetchOptions) => {
     setStatus("loading");
     try {
-      const res = await cached("today_matches_v3", () => sofaScoreService.getTodayMatches());
+      const res = await cached("today_matches_v3", () => sofaScoreService.getTodayMatches(), options?.force);
       setData(Array.isArray(res) && res.length > 0 ? res : getFallbackTodayMatches());
       setStatus("success");
     } catch {
@@ -177,11 +179,13 @@ export function useTopPlayers(leagueUrl: string, metric: "goals" | "assists") {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (options?: FetchOptions) => {
     setStatus("loading");
     try {
-      const res = await cached(`top_players_v1_${leagueUrl}_${metric}`, () =>
-        sofaScoreService.getTopPlayers(leagueUrl, metric)
+      const res = await cached(
+        `top_players_v1_${leagueUrl}_${metric}`,
+        () => sofaScoreService.getTopPlayers(leagueUrl, metric),
+        options?.force
       );
       setData(Array.isArray(res) && res.length > 0 ? res : getFallbackTopPlayers(metric));
       setStatus("success");

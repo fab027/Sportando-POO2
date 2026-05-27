@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -12,7 +12,7 @@ import Dashboard from "@/pages/Dashboard";
 import TeamsPage from "@/pages/TeamsPage";
 import AthletesPage from "@/pages/AthletesPage";
 import MatchesPage from "@/pages/MatchesPage";
-import PredictionsPage from "@/pages/PredictionsPage";
+import News from "@/pages/News";
 import FavoritesPage from "@/pages/FavoritesPage";
 import DataAggregatorPage from "@/pages/DataAggregatorPage";
 import LoginPage from "@/pages/LoginPage";
@@ -37,7 +37,7 @@ const App = () => (
                     <Route path="/equipes" element={<TeamsPage />} />
                     <Route path="/atletas" element={<AthletesPage />} />
                     <Route path="/partidas" element={<MatchesPage />} />
-                    <Route path="/previsoes" element={<PredictionsPage />} />
+                    <Route path="/noticias" element={<News />} />
                     <Route path="/favoritos" element={<FavoritesPage />} />
                     <Route path="/agregador" element={<DataAggregatorPage />} />
                   </Route>

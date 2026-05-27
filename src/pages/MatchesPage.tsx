@@ -397,7 +397,7 @@ const MatchesPage = () => {
           <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-6 text-center">
             <WifiOff className="mx-auto h-8 w-8 text-destructive/50 mb-3" />
             <p className="text-sm text-muted-foreground mb-3">Não foi possível carregar dados.</p>
-            <button onClick={refetch} className="rounded-lg bg-sport px-4 py-2 text-xs font-medium text-sport-foreground hover:opacity-90">
+            <button onClick={() => refetch()} className="rounded-lg bg-sport px-4 py-2 text-xs font-medium text-sport-foreground hover:opacity-90">
               Tentar novamente
             </button>
           </div>

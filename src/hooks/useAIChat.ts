@@ -1,9 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-<<<<<<< ours
 import type { League } from "@/data/leagues";
 import { analyzeRawDataLocally, resolveSportsLocalResponse } from "@/services/aggregatorService";
-=======
->>>>>>> theirs
 
 interface Message {
   role: "user" | "assistant";
@@ -137,11 +134,7 @@ export const useAIChat = (league: League) => {
     } finally {
       setIsLoading(false);
     }
-<<<<<<< ours
   }, [league]);
-=======
-  }, []);
->>>>>>> theirs
 
   const clearMessages = useCallback(() => {
     messagesRef.current = [];

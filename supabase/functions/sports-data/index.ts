@@ -300,6 +300,16 @@ const eventCountry = (event: any) =>
   event?.category?.name ||
   "Outros";
 
+const mapGoalIncident = (incident: any) => ({
+  id: String(incident?.id ?? `${incident?.time ?? "goal"}-${incident?.homeScore ?? ""}-${incident?.awayScore ?? ""}`),
+  playerName: incident?.player?.name || incident?.player?.shortName || incident?.playerName || "",
+  teamSide: typeof incident?.isHome === "boolean" ? (incident.isHome ? "home" : "away") : null,
+  homeScore: typeof incident?.homeScore === "number" ? incident.homeScore : null,
+  awayScore: typeof incident?.awayScore === "number" ? incident.awayScore : null,
+  time: typeof incident?.time === "number" ? incident.time : null,
+  incidentClass: incident?.incidentClass || null,
+});
+
 const getLiveMinute = (event: any): string | null => {
   const description = String(event?.status?.description || "").trim();
   const normalizedDescription = description.toLowerCase();
@@ -662,6 +672,15 @@ serve(async (req) => {
         console.error("Today matches error:", err);
         result = [];
       }
+    } else if (action === "event_goal_incidents") {
+      const eventId = Number(body.eventId);
+      if (!eventId) throw new Error("eventId required");
+      const data = await sofaFetch(`/event/${eventId}/incidents`);
+      const incidents = Array.isArray(data?.incidents) ? data.incidents : [];
+      result = incidents
+        .filter((incident: any) => String(incident?.incidentType || "").toLowerCase() === "goal")
+        .map(mapGoalIncident)
+        .sort((a: any, b: any) => (b.time || 0) - (a.time || 0));
     } else if (action === "top_players") {
       const { leagueUrl } = body;
       if (!leagueUrl) throw new Error("leagueUrl required");

@@ -38,6 +38,33 @@ function normalizeStatus(event: any) {
   return event?.status?.description || "Scheduled";
 }
 
+const periodLabel = (period?: number | null) => {
+  if (period === 1) return "1T";
+  if (period === 2) return "2T";
+  return null;
+};
+
+const periodFromText = (value: string) => {
+  const text = value.toLowerCase();
+  if (/(^|\s)(2t|2o tempo|2nd half|second half|segundo tempo)(\s|$)/.test(text)) return 2;
+  if (/(^|\s)(1t|1o tempo|1st half|first half|primeiro tempo)(\s|$)/.test(text)) return 1;
+  return null;
+};
+
+const isHalftimeText = (value: string) =>
+  /(^|\s)(ht|half[-\s]?time|interval|intervalo|break|pause)(\s|$)/.test(value.toLowerCase());
+
+const formatFootballMinute = (totalSeconds: number, period?: number | null) => {
+  const safeSeconds = Math.max(0, totalSeconds);
+  const minute = Math.max(1, Math.floor(safeSeconds / 60) + 1);
+  const regularLimit = period === 1 ? 45 : period === 2 || minute > 45 ? 90 : 45;
+  const regularSeconds = regularLimit * 60;
+  if (safeSeconds > regularSeconds) {
+    return `${regularLimit}+${Math.floor((safeSeconds - regularSeconds) / 60) + 1}'`;
+  }
+  return `${minute}'`;
+};
+
 function mapEvent(event: any): SofaMatch {
   return {
     id: event.id,
@@ -62,7 +89,7 @@ function mapEvent(event: any): SofaMatch {
 function getLiveClock(event: any) {
   const description = String(event?.status?.description || "").trim();
   const normalizedDescription = description.toLowerCase();
-  if (normalizedDescription.includes("half") || normalizedDescription.includes("interval")) {
+  if (isHalftimeText(normalizedDescription)) {
     return { minute: null, period: "Intervalo" };
   }
 
@@ -76,25 +103,36 @@ function getLiveClock(event: any) {
       0
   );
   const periodNumber = Number(time?.period ?? statusTime?.period ?? 0);
-  const inferredPeriod = periodNumber || (Number(time?.initial ?? statusTime?.initial ?? 0) >= 45 * 60 ? 2 : 1);
   const initialFromApi = Number(time?.initial ?? statusTime?.initial ?? 0);
-  const initial = initialFromApi || (inferredPeriod === 2 ? 45 * 60 : 0);
-  const max = Number(time?.max ?? statusTime?.max ?? 0) || (inferredPeriod === 2 ? 90 * 60 : 45 * 60);
-  const period =
-    inferredPeriod === 2 || initial >= 45 * 60
-      ? "2o tempo"
-      : inferredPeriod === 1 || event?.status?.type === "inprogress"
-        ? "1o tempo"
-        : description || null;
+  const played = Number(time?.played ?? statusTime?.played ?? 0);
+  const extra = Number(time?.extra ?? statusTime?.extra ?? 0);
+  const inferredPeriod =
+    periodNumber ||
+    periodFromText(description) ||
+    (initialFromApi >= 45 * 60 ? 2 : event?.status?.type === "inprogress" ? 1 : null);
+  const period = periodLabel(inferredPeriod) || description || null;
+
+  if (played > 0) {
+    const totalFromPlayed =
+      initialFromApi > 0 && played <= 60 * 60
+        ? initialFromApi + played + extra
+        : played + extra;
+    const periodFromPlayed = inferredPeriod || (totalFromPlayed > 45 * 60 ? 2 : 1);
+    return {
+      minute: formatFootballMinute(totalFromPlayed, periodFromPlayed),
+      period: periodLabel(periodFromPlayed) || period,
+    };
+  }
+
   if (!timestamp) return { minute: null, period };
 
   const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timestamp);
+  const initial = initialFromApi || (inferredPeriod === 2 ? 45 * 60 : 0);
   const total = initial + elapsed;
-  const minute = Math.max(1, Math.floor(total / 60) + 1);
-  const normalMinute = max ? Math.floor(max / 60) : 90;
+  const periodFromElapsed = inferredPeriod || (total > 45 * 60 ? 2 : 1);
   return {
-    minute: max && total > max ? `${normalMinute}+${Math.floor((total - max) / 60) + 1}'` : `${minute}'`,
-    period,
+    minute: formatFootballMinute(total, periodFromElapsed),
+    period: periodLabel(periodFromElapsed) || period,
   };
 }
 
@@ -105,6 +143,18 @@ function eventCountry(event: any) {
     event?.category?.name ||
     "Outros"
   );
+}
+
+function mapGoalIncident(incident: any): SofaGoalIncident {
+  return {
+    id: String(incident?.id ?? `${incident?.time ?? "goal"}-${incident?.homeScore ?? ""}-${incident?.awayScore ?? ""}`),
+    playerName: incident?.player?.name || incident?.player?.shortName || incident?.playerName || "",
+    teamSide: typeof incident?.isHome === "boolean" ? (incident.isHome ? "home" : "away") : null,
+    homeScore: typeof incident?.homeScore === "number" ? incident.homeScore : null,
+    awayScore: typeof incident?.awayScore === "number" ? incident.awayScore : null,
+    time: typeof incident?.time === "number" ? incident.time : null,
+    incidentClass: incident?.incidentClass || null,
+  };
 }
 
 const mapPosition = (position?: string) => {
@@ -399,6 +449,17 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
       });
   }
 
+  if (action === "event_goal_incidents") {
+    const eventId = Number(body.eventId);
+    if (!eventId) throw new Error("eventId obrigatorio");
+    const data = await sofaFetch(`/event/${eventId}/incidents`);
+    const incidents = Array.isArray(data?.incidents) ? data.incidents : [];
+    return incidents
+      .filter((incident: any) => String(incident?.incidentType || "").toLowerCase() === "goal")
+      .map(mapGoalIncident)
+      .sort((a: SofaGoalIncident, b: SofaGoalIncident) => (b.time || 0) - (a.time || 0));
+  }
+
   if (action === "top_players") {
     const tournamentId = uniqueTournamentIdFromUrl(String(body.leagueUrl));
     const seasonId = await getCurrentSeasonId(tournamentId);
@@ -597,6 +658,16 @@ export type SofaLiveMatch = {
   country?: string;
 };
 
+export type SofaGoalIncident = {
+  id: string;
+  playerName: string;
+  teamSide: "home" | "away" | null;
+  homeScore: number | null;
+  awayScore: number | null;
+  time: number | null;
+  incidentClass?: string | null;
+};
+
 export type SofaTopPlayer = {
   id: number;
   name: string;
@@ -710,6 +781,10 @@ export const sofaScoreService = {
 
   async getLiveMatches(): Promise<SofaLiveMatch[]> {
     return callSportsData({ action: "live" });
+  },
+
+  async getGoalIncidents(eventId: number): Promise<SofaGoalIncident[]> {
+    return callSportsData({ action: "event_goal_incidents", eventId });
   },
 
   async getTopPlayers(leagueUrl: string, metric: "goals" | "assists"): Promise<SofaTopPlayer[]> {
