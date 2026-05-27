@@ -105,7 +105,7 @@ export function useMatches(leagueUrl: string) {
     fetchData();
   }, [fetchData]);
 
-  const allMatches: SofaMatch[] = [
+  const allMatches: Array<SofaMatch & { _type: "past" | "upcoming" }> = [
     ...lastMatches.map((m) => ({ ...m, _type: "past" as const })),
     ...nextMatches.map((m) => ({ ...m, _type: "upcoming" as const })),
   ];

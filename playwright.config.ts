@@ -1,10 +1,17 @@
-import { createLovableConfig } from "lovable-agent-playwright-config/config";
+import { defineConfig, devices } from "@playwright/test";
 
-export default createLovableConfig({
-  // Add your custom playwright configuration overrides here
-  // Example:
-  // timeout: 60000,
-  // use: {
-  //   baseURL: 'http://localhost:3000',
-  // },
+export default defineConfig({
+  testDir: ".",
+  testMatch: ["**/*.spec.ts", "**/*.spec.tsx", "**/*.e2e.ts"],
+  timeout: 60_000,
+  use: {
+    baseURL: "http://localhost:8080",
+    trace: "on-first-retry",
+  },
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
+    },
+  ],
 });

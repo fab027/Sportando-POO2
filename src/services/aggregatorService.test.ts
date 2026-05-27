@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LEAGUES } from "@/data/leagues";
-import { resolveSportsDashboard } from "@/services/aggregatorService";
+import { resolveSportsDashboard, resolveSportsLocalResponse } from "@/services/aggregatorService";
+import { freeSportsDataService } from "@/services/freeSportsDataService";
+import { ogolService } from "@/services/ogolService";
 import { sofaScoreService } from "@/services/sofaScoreService";
 
 describe("resolveSportsDashboard", () => {
@@ -8,7 +10,72 @@ describe("resolveSportsDashboard", () => {
     vi.restoreAllMocks();
   });
 
-  it("answers a specific player yearly goal question from mocked profile data", async () => {
+  it("answers a player season stat from an external source summary", async () => {
+    const searchPlayerSpy = vi.spyOn(sofaScoreService, "searchPlayer");
+    vi.spyOn(ogolService, "getPlayerSeasonSummary").mockResolvedValue({
+      playerName: "Atacante Fonte",
+      season: "2025/26",
+      scope: "Clube Fonte, Selecao Fonte",
+      sourceUrl: "https://www.ogol.com.br/jogador/atacante-fonte/1",
+      rows: [
+        { competition: "Liga Fonte", matchesPlayed: 30, minutes: 2100, goals: 12, assists: 3 },
+        { competition: "Copa Fonte", matchesPlayed: 4, minutes: 260, goals: 1, assists: 1 },
+        { competition: "Eliminatorias Fonte", matchesPlayed: 6, minutes: 540, goals: 4, assists: 1 },
+      ],
+      total: { competition: "Total", matchesPlayed: 40, minutes: 2900, goals: 17, assists: 5 },
+    });
+
+    const league = LEAGUES.find((item) => item.id === "brasileirao-a")!;
+    const dashboard = await resolveSportsDashboard("Quantos gols o Atacante Fonte tem na temporada 25/26 ate o momento?", league);
+
+    expect(dashboard?.titulo).toBe("Gols de Atacante Fonte - temporada 2025/26");
+    expect(dashboard?.labels).toEqual(["Liga Fonte", "Copa Fonte", "Eliminatorias Fonte"]);
+    expect(dashboard?.datasets).toEqual([{ nome: "Gols", dados: [12, 1, 4] }]);
+    expect(dashboard?.insights.join(" ")).toContain("17 gols");
+    expect(searchPlayerSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not replace unresolved player stat questions with a league scorer ranking", async () => {
+    vi.spyOn(ogolService, "getPlayerSeasonSummary").mockResolvedValue(null);
+    vi.spyOn(sofaScoreService, "searchPlayer").mockResolvedValue([]);
+
+    const league = LEAGUES.find((item) => item.id === "brasileirao-a")!;
+    const dashboard = await resolveSportsDashboard(
+      "Quantos gols o Atacante Inexistente tem na temporada 25/26 ate o momento?",
+      league
+    );
+
+    expect(dashboard).toBeNull();
+  });
+
+  it("does not treat player comparisons as selected-league rankings", async () => {
+    const league = LEAGUES.find((item) => item.id === "brasileirao-a")!;
+    const dashboard = await resolveSportsDashboard("Quem tem mais gols, Jogador A ou Jogador B?", league);
+
+    expect(dashboard).toBeNull();
+  });
+
+  it("answers simple player profile questions as text instead of dashboard JSON", async () => {
+    vi.spyOn(freeSportsDataService, "searchPlayer").mockResolvedValue({
+      idPlayer: "1",
+      strPlayer: "Neymar",
+      strTeam: "Santos",
+      strNationality: "Brazil",
+      dateBorn: "1992-02-05",
+      strPosition: "Left Wing",
+    });
+
+    const league = LEAGUES.find((item) => item.id === "brasileirao-a")!;
+    const response = await resolveSportsLocalResponse("Qual a idade do Neymar?", league);
+
+    expect(response?.format).toBe("text");
+    expect(response?.content).toContain("Neymar");
+    expect(response?.content).toContain("Fonte: TheSportsDB API v1");
+    expect(response?.content).not.toContain('"titulo"');
+  });
+
+  it("falls back to profile data when the external source is unavailable", async () => {
+    vi.spyOn(ogolService, "getPlayerSeasonSummary").mockResolvedValue(null);
     vi.spyOn(sofaScoreService, "searchPlayer").mockResolvedValue([
       {
         id: 1,
@@ -43,48 +110,8 @@ describe("resolveSportsDashboard", () => {
     const league = LEAGUES.find((item) => item.id === "brasileirao-a")!;
     const dashboard = await resolveSportsDashboard("Quantos gols o Jogador Teste tem em 2026?", league);
 
-    expect(dashboard?.titulo).toBe("Gols de Jogador Teste em 2026");
+    expect(dashboard?.titulo).toBe("Gols de Jogador Teste nas temporadas que incluem 2026");
     expect(dashboard?.datasets).toEqual([{ nome: "Gols", dados: [7] }]);
     expect(dashboard?.insights.join(" ")).toContain("7 gols");
-  });
-
-  it("answers a specific player stat instead of falling back to league rankings", async () => {
-    vi.spyOn(sofaScoreService, "searchPlayer").mockResolvedValue([
-      {
-        id: 2,
-        name: "Meia Teste",
-        url: "https://www.sofascore.com/player/meia-teste/2",
-        description: "",
-      },
-    ]);
-    vi.spyOn(sofaScoreService, "getPlayerStats").mockResolvedValue({
-      name: "Meia Teste",
-      team: "Clube Teste",
-      position: "Meio-campista",
-      nationality: "Brasil",
-      age: 28,
-      height: "",
-      foot: "",
-      shirtNumber: 10,
-      seasons: [
-        {
-          season: "2026",
-          tournament: "Campeonato Teste",
-          team: "Clube Teste",
-          matchesPlayed: 12,
-          minutes: 900,
-          goals: 3,
-          assists: 6,
-          rating: 7.4,
-        },
-      ],
-    });
-
-    const league = LEAGUES.find((item) => item.id === "brasileirao-a")!;
-    const dashboard = await resolveSportsDashboard("Quantas assistencias o Meia Teste tem em 2026?", league);
-
-    expect(dashboard?.titulo).toBe("Assistencias de Meia Teste em 2026");
-    expect(dashboard?.titulo).not.toContain("Lideres");
-    expect(dashboard?.datasets).toEqual([{ nome: "Assistencias", dados: [6] }]);
   });
 });

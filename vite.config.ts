@@ -1,10 +1,9 @@
-import { defineConfig, type PluginOption } from "vite";
+import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
-import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => ({
+export default defineConfig({
   server: {
     host: "::",
     port: 8080,
@@ -18,6 +17,29 @@ export default defineConfig(({ mode }) => ({
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
           Referer: "https://www.sofascore.com/",
+        },
+      },
+      "/thesportsdb-api": {
+        target: "https://www.thesportsdb.com",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/thesportsdb-api/, "/api/v1/json/123"),
+        headers: {
+          Accept: "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+          Referer: "https://www.thesportsdb.com/",
+        },
+      },
+      "/ogol-api": {
+        target: "https://www.ogol.com.br",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/ogol-api/, ""),
+        headers: {
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+          Referer: "https://www.ogol.com.br/",
         },
       },
       "/news-rss": {
@@ -75,11 +97,11 @@ export default defineConfig(({ mode }) => ({
       overlay: false,
     },
   },
-  plugins: [react(), mode === "development" && componentTagger()].filter(Boolean) as PluginOption[],
+  plugins: [react()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
   },
-}));
+});

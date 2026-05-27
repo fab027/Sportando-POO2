@@ -7,6 +7,8 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+const openAIChatCompletionsUrl = "https://api.openai.com/v1/chat/completions";
+
 function requireFirecrawlKey(): string {
   // Prefer the new connector-managed key; fall back to legacy secret if present.
   const key =
@@ -15,6 +17,27 @@ function requireFirecrawlKey(): string {
   if (!key) throw new Error("FIRECRAWL_API_KEY_1 not configured");
   return key;
 }
+
+const openAIChatCompletion = async (
+  messages: Array<{ role: "system" | "user"; content: string }>,
+  options: { responseFormat?: "json_object"; model?: string } = {}
+) => {
+  const key = Deno.env.get("OPENAI_API_KEY");
+  if (!key) throw new Error("OPENAI_API_KEY not configured");
+
+  return fetch(openAIChatCompletionsUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: options.model || Deno.env.get("OPENAI_MODEL") || "gpt-4o-mini",
+      messages,
+      ...(options.responseFormat ? { response_format: { type: options.responseFormat } } : {}),
+    }),
+  });
+};
 
 const scrapeExtract = async (
   url: string,
@@ -68,7 +91,7 @@ const scrapeExtract = async (
   }
 };
 
-// Scrape markdown via Firecrawl, then ask Lovable AI to structure it.
+// Scrape markdown via Firecrawl, then ask OpenAI to structure it.
 // Used when Firecrawl's native "extract" returns empty silently.
 const scrapeMarkdownThenAI = async (
   url: string,
@@ -76,8 +99,6 @@ const scrapeMarkdownThenAI = async (
   schema: Record<string, unknown>
 ): Promise<any> => {
   const fcKey = requireFirecrawlKey();
-  const aiKey = Deno.env.get("LOVABLE_API_KEY");
-  if (!aiKey) throw new Error("LOVABLE_API_KEY not configured");
 
   console.log(`Scraping markdown: ${url}`);
   const fcRes = await fetch("https://api.firecrawl.dev/v1/scrape", {
@@ -94,21 +115,16 @@ const scrapeMarkdownThenAI = async (
   // Truncate to keep prompt manageable
   const trimmed = markdown.slice(0, 18000);
 
-  const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${aiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "google/gemini-2.5-flash",
-      messages: [
-        { role: "system", content: "You extract structured data from web page content. Output ONLY valid JSON matching the requested schema. Use ONLY information present in the provided content — never invent placeholders." },
-        { role: "user", content: `${prompt}\n\nSchema (JSON):\n${JSON.stringify(schema)}\n\nPage content (markdown):\n${trimmed}` },
-      ],
-      response_format: { type: "json_object" },
-    }),
-  });
+  const aiRes = await openAIChatCompletion(
+    [
+      { role: "system", content: "You extract structured data from web page content. Output ONLY valid JSON matching the requested schema. Use ONLY information present in the provided content - never invent placeholders." },
+      { role: "user", content: `${prompt}\n\nSchema (JSON):\n${JSON.stringify(schema)}\n\nPage content (markdown):\n${trimmed}` },
+    ],
+    { responseFormat: "json_object" }
+  );
   if (!aiRes.ok) {
     const errText = await aiRes.text();
-    console.error(`Lovable AI ${aiRes.status}:`, errText);
+    console.error(`OpenAI ${aiRes.status}:`, errText);
     throw new Error(`AI error: ${aiRes.status}`);
   }
   const aiData = await aiRes.json();
@@ -164,48 +180,6 @@ const standingsSchema = {
           scored: { type: "number" },
           conceded: { type: "number" },
           points: { type: "number" },
-        },
-      },
-    },
-  },
-};
-
-const matchesSchema = {
-  type: "object",
-  properties: {
-    matches: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          homeTeam: { type: "string" },
-          awayTeam: { type: "string" },
-          homeScore: { type: "number" },
-          awayScore: { type: "number" },
-          status: { type: "string" },
-          date: { type: "string" },
-          round: { type: "number" },
-        },
-      },
-    },
-  },
-};
-
-const liveMatchesSchema = {
-  type: "object",
-  properties: {
-    matches: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          homeTeam: { type: "string" },
-          awayTeam: { type: "string" },
-          homeScore: { type: "number" },
-          awayScore: { type: "number" },
-          minute: { type: "string" },
-          tournament: { type: "string" },
-          status: { type: "string" },
         },
       },
     },
@@ -620,163 +594,12 @@ serve(async (req) => {
         .sort((a: any, b: any) =>
           isLast ? b.startTimestamp - a.startTimestamp : a.startTimestamp - b.startTimestamp
         );
-
-      return new Response(JSON.stringify(result), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-
-      // Map SofaScore league URL to a placardefutebol slug (page contains both past + upcoming matches)
-      const leagueSlug = (() => {
-        const u = leagueUrl.toLowerCase();
-        if (u.includes("brasileirao-serie-a") || u.includes("brazil/serie-a")) return "brasileirao-serie-a";
-        if (u.includes("brasileirao-serie-b")) return "brasileirao-serie-b";
-        if (u.includes("premier-league")) return "premier-league";
-        if (u.includes("laliga") || u.includes("la-liga")) return "la-liga";
-        if (u.includes("bundesliga")) return "bundesliga";
-        if (u.includes("ligue-1")) return "ligue-1";
-        if (u.includes("italy/serie-a") || u.includes("/serie-a/23")) return "serie-a-italia";
-        if (u.includes("libertadores")) return "libertadores";
-        if (u.includes("sul-americana") || u.includes("sudamericana")) return "sul-americana";
-        if (u.includes("champions-league")) return "champions-league";
-        if (u.includes("europa-league")) return "europa-league";
-        return "brasileirao-serie-a";
-      })();
-
-      const sourceUrl = `https://www.placardefutebol.com.br/${leagueSlug}`;
-      const todayIso = new Date().toISOString().slice(0, 10);
-
-      const strictRules = `CRITICAL RULES:
-- Use ONLY the REAL club names exactly as they appear on the page (e.g. "Flamengo", "Palmeiras", "Real Madrid").
-- NEVER invent or use placeholders like "Team A", "Time 1", "Equipe X", "Home", "Away", "TBD".
-- If you cannot read both real team names from the page text, OMIT that match entirely.
-- Return an EMPTY matches array if you cannot find real matches. Do NOT fabricate examples.`;
-
-      // Extract ALL matches on the page (past + upcoming) — server-side splits by timestamp
-      const prompt = `Today is ${todayIso}. This Placar de Futebol page lists league matches in two sections: "Últimos jogos" (finished, with scores like "2 - 0") and "Próximos jogos" (upcoming, with kickoff times like "16:00" and no score).
-${strictRules}
-Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awayTeam, homeScore (integer if finished, null if upcoming), awayScore (integer if finished, null if upcoming), status ("Finished" if it has a score, "Scheduled" otherwise), date as ISO 8601 with year (e.g. "2026-04-19T20:00:00") — combine the date label ("ontem"/"hoje"/"Sábado, 25/04"/"19/04") with the kickoff time and year ${todayIso.slice(0, 4)}, and round/rodada number if shown.`;
-
-      const data = await scrapeMarkdownThenAI(sourceUrl, prompt, matchesSchema);
-
-      const nowSec = Math.floor(Date.now() / 1000);
-      const rawMatches = (data?.matches || []).map((m: any, i: number) => {
-        let ts = 0;
-        if (m.date) {
-          const parsed = new Date(m.date).getTime();
-          if (!isNaN(parsed)) ts = Math.floor(parsed / 1000);
-        }
-        return {
-          id: (isLast ? 1000 : 5000) + i,
-          homeTeam: (m.homeTeam || "").trim(),
-          awayTeam: (m.awayTeam || "").trim(),
-          homeScore: isLast ? (m.homeScore ?? null) : null,
-          awayScore: isLast ? (m.awayScore ?? null) : null,
-          status: m.status || (isLast ? "Finished" : "Scheduled"),
-          startTimestamp: ts,
-          roundInfo: typeof m.round === "number" && m.round > 0 ? m.round : null,
-        };
-      });
-
-      // Reject placeholder/generic team names
-      const placeholderRe = /^(team|equipe|time|home|away|casa|fora)\s*[a-z0-9]{0,2}$|^(tbd|n\/?a|unknown|---?|\?+)$/i;
-      const isRealName = (s: string) => !!s && s.trim().length >= 2 && !placeholderRe.test(s.trim());
-
-      // Detect "sequence of placeholders" as a hard signal the LLM hallucinated
-      const allLetters = rawMatches.every((m: any) =>
-        /^team\s*[a-z]$/i.test(m.homeTeam) || /^team\s*[a-z]$/i.test(m.awayTeam)
-      );
-      if (allLetters && rawMatches.length > 0) {
-        console.warn(`${action}: detected hallucinated Team A/B/C — discarding all`);
-        result = [];
-      } else {
-        const filtered = rawMatches.filter((m: any) => {
-          if (!isRealName(m.homeTeam) || !isRealName(m.awayTeam)) return false;
-          if (!m.startTimestamp) return false;
-          if (isLast) return m.startTimestamp < nowSec;
-          return m.startTimestamp >= nowSec - 3600;
-        });
-        filtered.sort((a: any, b: any) =>
-          isLast ? b.startTimestamp - a.startTimestamp : a.startTimestamp - b.startTimestamp
-        );
-        console.log(`${action}: ${rawMatches.length} raw -> ${filtered.length} after filter (source: ${sourceUrl})`);
-        result = filtered;
-      }
     } else if (action === "live") {
       const data = await sofaFetch("/sport/football/events/live");
       const events = Array.isArray(data?.events) ? data.events : [];
       result = events
         .filter((event: any) => event?.status?.type === "inprogress")
         .map(mapSofaLiveEvent);
-
-      return new Response(JSON.stringify(result), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-
-      try {
-        const liveRules = `CRITICAL RULES:
-- ONLY include matches that are CURRENTLY in progress RIGHT NOW.
-- A live match MUST have a running minute indicator: "12'", "45+2'", "HT" (intervalo), "1T"/"2T", "3Q" (quarter), or an explicit "AO VIVO" badge next to the score.
-- IGNORE matches showing kickoff times like "16:00", "19:30" — those are SCHEDULED, NOT live.
-- IGNORE any match labeled "Encerrado", "Encerrada", "Finalizado", "Finalizada", "FT", "Final", "Pós-jogo", "Após pênaltis", "Após prorrogação" — those are FINISHED, NOT live. Do NOT include them even if they appear near the top of the page.
-- The "minute" field MUST be ONLY the running minute (e.g. "32'", "45+2'", "HT", "Intervalo"). NEVER put scores, dates or status words in the minute field.
-- Use REAL club names exactly as they appear (e.g. "Flamengo", "Real Madrid"). NEVER use "Team A", "Time 1", "Home", "Away".
-- If NOTHING is currently live, return { "matches": [] }. Do NOT fabricate examples.`;
-
-        const data = await scrapeMarkdownThenAI(
-          "https://www.placardefutebol.com.br/",
-          `${liveRules}\nFrom this Placar de Futebol homepage, look ONLY at the "AO VIVO" / "Ao vivo agora" / "Em andamento" section at the top. Extract every match in that section. For each: homeTeam, awayTeam, homeScore (current goals/points, integer), awayScore (current goals/points, integer), minute (current minute string like "32'" or "HT"), tournament (league/competition name), status (always "Live").`,
-          liveMatchesSchema
-        );
-        const rawLive = data?.matches || [];
-        console.log(`Live raw: ${rawLive.length}`);
-
-        const placeholderRe = /^(team|equipe|time|home|away|casa|fora)\s*[a-z0-9]{0,2}$|^(tbd|n\/?a|unknown|---?|\?+)$/i;
-        const finishedRe = /encerr|finaliz|finish|\bft\b|\bfinal\b|after\s*pen|p[oô]s.?p[eê]nal|p[oó]s.?jogo|prorroga/i;
-        const scheduledStatusRe = /agend|scheduled|not\s*started|kick\s*off|a\s*come[cç]ar|hoje\s*\d{1,2}:\d{2}/i;
-        const scheduledTimeRe = /^\s*\d{1,2}:\d{2}\s*$/;
-        // Strict live minute: "32'", "45+2'", "HT", "Intervalo", "1T"/"2T", "1Q".."4Q"
-        const liveMinuteRe = /^(\d{1,3}('|\s*\+\s*\d+'?)?|ht|halftime|intervalo|[12]t|[1-4]q)$/i;
-
-        const filtered = rawLive.filter((m: any) => {
-          const home = (m.homeTeam || "").trim();
-          const away = (m.awayTeam || "").trim();
-          if (!home || !away) return false;
-          if (placeholderRe.test(home) || placeholderRe.test(away)) return false;
-          const minute = (m.minute || "").trim();
-          const status = (m.status || "").trim();
-          // Reject anything that smells finished or scheduled (in either field)
-          if (finishedRe.test(status) || finishedRe.test(minute)) return false;
-          if (scheduledStatusRe.test(status) || scheduledStatusRe.test(minute)) return false;
-          if (scheduledTimeRe.test(minute)) return false;
-          // Minute is required and must match the strict live pattern
-          if (!minute) return false;
-          // Normalize: strip trailing punctuation/spaces before testing
-          const cleanMinute = minute.replace(/\s+/g, "").replace(/[.,;]+$/, "");
-          if (!liveMinuteRe.test(cleanMinute)) return false;
-          // Numeric minute sanity check: football 1-130, basketball quarters handled above
-          const numMatch = cleanMinute.match(/^(\d{1,3})/);
-          if (numMatch) {
-            const n = parseInt(numMatch[1], 10);
-            if (n < 1 || n > 130) return false;
-          }
-          return true;
-        });
-        console.log(`Live filtered: ${filtered.length}`);
-
-        result = filtered.map((m: any, i: number) => ({
-          id: 9000 + i,
-          homeTeam: m.homeTeam.trim(),
-          awayTeam: m.awayTeam.trim(),
-          homeScore: m.homeScore ?? 0,
-          awayScore: m.awayScore ?? 0,
-          status: "Live",
-          minute: m.minute || null,
-          tournament: m.tournament || "Desconhecido",
-        }));
-      } catch (err) {
-        console.error("Live scraping error:", err);
-        result = [];
-      }
     } else if (action === "today_matches") {
       const date = todayLocalIso();
       const data = await sofaFetch(`/sport/football/scheduled-events/${date}`);
@@ -942,21 +765,6 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
         "al-hilal", "al hilal", "al-nassr", "al nassr", "santos",
         "brazil", "brasil", "argentina", "portugal", "france", "england",
       ];
-      // Iconic players that should always be ranked top when their name is searched
-      const iconicPlayers: Record<string, string[]> = {
-        "neymar": ["neymar jr", "neymar"],
-        "messi": ["lionel messi", "leo messi"],
-        "ronaldo": ["cristiano ronaldo"],
-        "cristiano": ["cristiano ronaldo"],
-        "mbappe": ["kylian mbappé", "kylian mbappe"],
-        "haaland": ["erling haaland"],
-        "vinicius": ["vinícius júnior", "vinicius jr"],
-        "rodrygo": ["rodrygo goes"],
-        "endrick": ["endrick"],
-        "pedri": ["pedri"],
-        "yamal": ["lamine yamal"],
-        "bellingham": ["jude bellingham"],
-      };
       const scoreItem = (r: any) => {
         const rawName = (r.title || "")
           .replace(/ - SofaScore.*$/i, "")
@@ -976,14 +784,6 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
         for (const t of qTokens) if (nameLower.includes(t)) score += 50;
         // Famous markers in description/title boost fame
         for (const m of famousMarkers) if (blob.includes(m)) score += 30;
-        // Iconic player override: huge boost
-        for (const key of Object.keys(iconicPlayers)) {
-          if (q.includes(key)) {
-            for (const variant of iconicPlayers[key]) {
-              if (nameLower.includes(variant)) score += 2000;
-            }
-          }
-        }
         // Shorter name URLs (canonical players) generally rank higher
         if (/\/player\/[^/]+\/\d+$/.test(r.url || "")) score += 20;
         // Penalize obviously obscure entries (very long names with extra qualifiers)
@@ -1057,26 +857,18 @@ Extract ALL matches from BOTH sections (up to 30 total). For each: homeTeam, awa
           let descriptionPt = baseDesc;
           if (baseDesc) {
             try {
-              const aiKey = Deno.env.get("LOVABLE_API_KEY");
-              if (aiKey) {
-                const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-                  method: "POST",
-                  headers: {
-                    Authorization: `Bearer ${aiKey}`,
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify({
-                    model: "google/gemini-2.5-flash-lite",
-                    messages: [
-                      {
-                        role: "system",
-                        content:
-                          "Traduza para Português do Brasil. Responda APENAS com a tradução, sem explicações, sem aspas. Mantenha nomes próprios. Se já estiver em PT-BR, repita igual. Máximo 200 caracteres.",
-                      },
-                      { role: "user", content: baseDesc },
-                    ],
-                  }),
-                });
+              if (Deno.env.get("OPENAI_API_KEY")) {
+                const aiRes = await openAIChatCompletion(
+                  [
+                    {
+                      role: "system",
+                      content:
+                        "Traduza para Portugues do Brasil. Responda APENAS com a traducao, sem explicacoes, sem aspas. Mantenha nomes proprios. Se ja estiver em PT-BR, repita igual. Maximo 200 caracteres.",
+                    },
+                    { role: "user", content: baseDesc },
+                  ],
+                  { model: Deno.env.get("OPENAI_TRANSLATION_MODEL") || Deno.env.get("OPENAI_MODEL") || "gpt-4o-mini" }
+                );
                 if (aiRes.ok) {
                   const aj = await aiRes.json();
                   const translated = aj?.choices?.[0]?.message?.content?.trim();

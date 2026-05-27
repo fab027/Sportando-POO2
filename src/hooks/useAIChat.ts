@@ -1,6 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+<<<<<<< ours
 import type { League } from "@/data/leagues";
-import { analyzeRawDataLocally, resolveSportsDashboard } from "@/services/aggregatorService";
+import { analyzeRawDataLocally, resolveSportsLocalResponse } from "@/services/aggregatorService";
+=======
+>>>>>>> theirs
 
 interface Message {
   role: "user" | "assistant";
@@ -27,13 +30,24 @@ export const useAIChat = (league: League) => {
     const allMessages = [...messagesRef.current, userMsg];
 
     try {
-      const localDashboard =
+      const localResponse =
         mode === "analyze"
-          ? analyzeRawDataLocally(input)
-          : await resolveSportsDashboard(input, league).catch(() => null);
+          ? (() => {
+              const dashboard = analyzeRawDataLocally(input);
+              return dashboard ? { format: "dashboard" as const, content: dashboard } : null;
+            })()
+          : await resolveSportsLocalResponse(input, league).catch(() => null);
 
-      if (localDashboard) {
-        setMessages(prev => [...prev, { role: "assistant", content: JSON.stringify(localDashboard, null, 2) }]);
+      if (localResponse) {
+        setMessages(prev => [
+          ...prev,
+          {
+            role: "assistant",
+            content: localResponse.format === "dashboard"
+              ? JSON.stringify(localResponse.content, null, 2)
+              : localResponse.content,
+          },
+        ]);
         return;
       }
 
@@ -43,7 +57,15 @@ export const useAIChat = (league: League) => {
           "Content-Type": "application/json",
           Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
         },
-        body: JSON.stringify({ messages: allMessages, mode }),
+        body: JSON.stringify({
+          messages: allMessages,
+          mode,
+          context: {
+            sport: league.sport,
+            league: league.name,
+            country: league.country,
+          },
+        }),
       });
 
       if (!resp.ok || !resp.body) {
@@ -94,23 +116,32 @@ export const useAIChat = (league: League) => {
       }
     } catch (e) {
       console.error("AI chat error:", e);
-      const fallbackDashboard =
+      const fallbackResponse =
         mode === "analyze"
-          ? analyzeRawDataLocally(input)
-          : await resolveSportsDashboard(input, league).catch(() => null);
+          ? (() => {
+              const dashboard = analyzeRawDataLocally(input);
+              return dashboard ? { format: "dashboard" as const, content: dashboard } : null;
+            })()
+          : await resolveSportsLocalResponse(input, league).catch(() => null);
       setMessages(prev => [
         ...prev,
         {
           role: "assistant",
-          content: fallbackDashboard
-            ? JSON.stringify(fallbackDashboard, null, 2)
-            : "Nao consegui acessar a IA remota agora. Para dados atuais, tente perguntas como: artilheiros, assistencias, classificacao ou jogos de hoje da liga selecionada.",
+          content: fallbackResponse
+            ? fallbackResponse.format === "dashboard"
+              ? JSON.stringify(fallbackResponse.content, null, 2)
+              : fallbackResponse.content
+            : "Nao consegui acessar a IA remota agora. Tente novamente em instantes ou reformule a pergunta indicando jogador, equipe, campeonato ou temporada.",
         },
       ]);
     } finally {
       setIsLoading(false);
     }
+<<<<<<< ours
   }, [league]);
+=======
+  }, []);
+>>>>>>> theirs
 
   const clearMessages = useCallback(() => {
     messagesRef.current = [];

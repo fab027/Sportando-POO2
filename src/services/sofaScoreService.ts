@@ -642,6 +642,7 @@ export type PlayerSeasonStats = {
   season: string;
   tournament?: string;
   team: string;
+  teamImageUrl?: string | null;
   matchesPlayed: number;
   starts?: number;
   minutes: number;

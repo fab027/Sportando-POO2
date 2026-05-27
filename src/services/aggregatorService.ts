@@ -1,9 +1,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { DashboardData } from "@/components/DynamicDashboard";
 import type { League } from "@/data/leagues";
+import { freeSportsDataService } from "@/services/freeSportsDataService";
+import { ogolService, type OgolSeasonMetric, type OgolSeasonSummary } from "@/services/ogolService";
 import { sofaScoreService } from "@/services/sofaScoreService";
 
 const SOFASCORE_PROXY_URL = "/sofascore-api";
+
+export type SportsLocalResponse =
+  | { format: "text"; content: string }
+  | { format: "dashboard"; content: DashboardData };
 
 const sofaFetch = async (path: string) => {
   const res = await fetch(`${SOFASCORE_PROXY_URL}${path}`, {
@@ -33,9 +39,18 @@ const getCurrentSeason = async (league: League) => {
   return { tournamentId, seasonId: Number(season.id), seasonName: season.year || season.name || "" };
 };
 
-const metricFromQuestion = (question: string) => {
+const metricFromQuestion = (question: string, sport: League["sport"] = "football") => {
   const q = normalize(question);
-  if (/(participa|gols?\s*\+\s*assist|g\/a|g\+a|goal contributions|contribuicoes|contribuições)/.test(q)) {
+
+  if (sport === "basketball") {
+    if (/(rebote|rebound)/.test(q)) return { key: "rebounds", label: "Rebotes", title: "Lideres em rebotes" };
+    if (/(assist|passe)/.test(q)) return { key: "assists", label: "Assistencias", title: "Lideres em assistencias" };
+    if (/(roubo|steal)/.test(q)) return { key: "steals", label: "Roubos", title: "Lideres em roubos" };
+    if (/(toco|bloqueio|block)/.test(q)) return { key: "blocks", label: "Tocos", title: "Lideres em tocos" };
+    return { key: "points", label: "Pontos", title: "Cestinhas" };
+  }
+
+  if (/(participa|gols?\s*\+\s*assist|g\/a|g\+a|goal contributions|contribuicoes)/.test(q)) {
     return { key: "goalsAssistsSum", label: "G+A", title: "Lideres em participacoes em gols" };
   }
   if (/(assist|garcom|passe)/.test(q)) return { key: "assists", label: "Assistencias", title: "Lideres em assistencias" };
@@ -44,6 +59,15 @@ const metricFromQuestion = (question: string) => {
   if (/(xa|assistencias esperadas|expected assists)/.test(q)) return { key: "expectedAssists", label: "xA", title: "Lideres em xA" };
   if (/(partidas|jogos|aparicoes|presencas)/.test(q)) return { key: "appearances", label: "Partidas", title: "Mais partidas" };
   return { key: "goals", label: "Gols", title: "Artilheiros" };
+};
+
+const asksLeagueRanking = (question: string) => {
+  const q = normalize(question);
+  const rankingIntent = /(artilheiro|cestinha|ranking|rank|lideres|top\s*\d*|maiores|melhores|lista|classificacao de jogadores|classificacao de atletas)/.test(q);
+  const moreMetricIntent = /\b(mais|maior|melhor)\s+(gols?|pontos?|assistencias?|rebotes?|xg|xa|nota|rating)\b/.test(q);
+  const leagueScopeIntent = /(liga|campeonato|brasileirao|serie a|nba|premier|laliga|la liga|champions|temporada|competicao)/.test(q);
+  const metricIntent = /(gols?|goleador|pontos?|cestinha|assist|rebote|participa|contribuic|nota|rating|xg|xa|jogadores|atletas)/.test(q);
+  return (rankingIntent || (moreMetricIntent && leagueScopeIntent)) && metricIntent;
 };
 
 const numberValue = (value: unknown) => {
@@ -62,9 +86,32 @@ const isNumericValue = (value: unknown) => {
 const sourceInsight = (league: League, seasonName: string) =>
   `Fonte: SofaScore API, ${league.name}${seasonName ? ` ${seasonName}` : ""}. Dados consultados em tempo real.`;
 
-const playerYearQuestion = (question: string) => {
+const freeSourceInsight = "Fonte gratuita: TheSportsDB API v1 (chave publica 123).";
+
+const formatDateBR = (date?: string) => {
+  if (!date) return "";
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  return parsed.toLocaleDateString("pt-BR", { timeZone: "UTC" });
+};
+
+const translatedPosition = (position: string) => {
+  const positionMap: Record<string, string> = {
+    "left wing": "ponta esquerda",
+    "right wing": "ponta direita",
+    forward: "atacante",
+    striker: "centroavante",
+    midfielder: "meio-campista",
+    defender: "defensor",
+    goalkeeper: "goleiro",
+  };
+  const translated = positionMap[normalize(position)];
+  return translated ? `${translated} (${position})` : position;
+};
+
+const playerStatQuestion = (question: string) => {
   const q = normalize(question);
-  const year = q.match(/\b(20\d{2}|19\d{2})\b/)?.[1];
+  const season = q.match(/\b(20\d{2}\/\d{2}|\d{2}\/\d{2}|20\d{2}|19\d{2})\b/)?.[1];
   const metric = /(assist|garcom|passe)/.test(q)
     ? "assists"
     : /(partidas|jogos|aparicoes|presencas)/.test(q)
@@ -74,17 +121,19 @@ const playerYearQuestion = (question: string) => {
         : /(gols?|marcou|fez)/.test(q)
           ? "goals"
           : null;
-  if (!year || !metric) return null;
+  if (!season || !metric) return null;
+
   const cleaned = q
     .replace(/https?:\/\/\S+/g, " ")
-    .replace(/\b(quantos?|quantas?|total|ja|já|tem|fez|marcou|teve|no|na|ano|temporada|de|do|da|em|ate|até)\b/g, " ")
+    .replace(/\b(quantos?|quantas?|total|ja|tem|fez|marcou|teve|no|na|ano|temporada|de|do|da|em|ate|atual|momento)\b/g, " ")
     .replace(/\b(o|a|os|as)\b/g, " ")
-    .replace(/\b(20\d{2}|19\d{2})\b/g, " ")
-    .replace(/\b(gols?|assistencias?|assistências?|partidas|jogos|minutos|minutagem)\b/g, " ")
+    .replace(/\b(20\d{2}\/\d{2}|\d{2}\/\d{2}|20\d{2}|19\d{2})\b/g, " ")
+    .replace(/\b(gols?|assistencias?|partidas|jogos|minutos|minutagem)\b/g, " ")
     .replace(/[?!.]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return cleaned.length >= 3 ? { playerQuery: cleaned, year, metric } : null;
+
+  return cleaned.length >= 3 ? { playerQuery: cleaned, season, metric } : null;
 };
 
 const playerQueryCandidates = (playerQuery: string) => {
@@ -96,6 +145,22 @@ const playerQueryCandidates = (playerQuery: string) => {
   return [...candidates].filter((candidate) => candidate.length >= 3);
 };
 
+const playerProfileQuestion = (question: string) => {
+  const q = normalize(question);
+  if (!/(jogador|atleta|perfil|idade|nasceu|nacionalidade|posicao|posicoes|altura|time|clube|quem e|onde joga|carreira)/.test(q)) {
+    return null;
+  }
+
+  const cleaned = q
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/\b(qual|quais|quem|onde|joga|jogou|atuou|atua|e|do|da|de|o|a|os|as|um|uma|jogador|atleta|perfil|idade|nacionalidade|posicao|posicoes|altura|time|clube|atual|sobre|me|fale|mostre|dados|carreira)\b/g, " ")
+    .replace(/[?!.:,;]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleaned.length >= 3 ? cleaned : null;
+};
+
 const searchPlayerFromQuestion = async (playerQuery: string) => {
   for (const candidate of playerQueryCandidates(playerQuery)) {
     const [player] = await sofaScoreService.searchPlayer(candidate);
@@ -105,39 +170,179 @@ const searchPlayerFromQuestion = async (playerQuery: string) => {
 };
 
 const isNationalTeamTournament = (name: string) =>
-  /(world cup|copa do mundo|qual\.|qualific|eliminat|uefa nations|sele[cç][aã]o|international|amistoso)/i.test(name);
+  /(world cup|copa do mundo|qual\.|qualific|eliminat|uefa nations|selecao|international|amistoso)/i.test(name);
 
-const answerPlayerYearQuestion = async (question: string): Promise<DashboardData | null> => {
-  const parsed = playerYearQuestion(question);
+const seasonYears = (season: string) =>
+  (season.match(/\d{2,4}/g) || [])
+    .map((value) => Number(value.length === 2 ? `20${value}` : value))
+    .filter((year) => Number.isFinite(year));
+
+const normalizeSeasonToken = (season: string) => {
+  const years = seasonYears(season);
+  if (years.length >= 2) return `${years[0]}/${String(years[1]).slice(-2)}`;
+  return years[0] ? String(years[0]) : normalize(season).trim();
+};
+
+const seasonIncludesYear = (season: string, target: string) => {
+  if (target.includes("/")) return normalizeSeasonToken(season) === normalizeSeasonToken(target);
+  return seasonYears(season).includes(Number(target));
+};
+
+const asksCalendarYearTotal = (question: string) => {
+  const q = normalize(question);
+  return /\b(ate o momento|ano|em 20\d{2}|no 20\d{2}|durante 20\d{2})\b/.test(q) && !/\btemporada\b/.test(q);
+};
+
+const metricLabel: Record<string, string> = {
+  goals: "Gols",
+  assists: "Assistencias",
+  matchesPlayed: "Partidas",
+  minutes: "Minutos",
+};
+
+const ogolMetricForParsedMetric: Record<string, OgolSeasonMetric> = {
+  goals: "goals",
+  assists: "assists",
+  matchesPlayed: "matchesPlayed",
+  minutes: "minutes",
+};
+
+const dashboardFromOgolSummary = (
+  summary: OgolSeasonSummary,
+  metric: OgolSeasonMetric,
+  label: string,
+): DashboardData => ({
+  titulo: `${label} de ${summary.playerName} - temporada ${summary.season}`,
+  descricao: summary.scope ? `Resumo da temporada ${summary.season} [${summary.scope}]` : `Resumo da temporada ${summary.season}`,
+  tipo: "tabela",
+  labels: summary.rows.map((row) => row.competition),
+  datasets: [{ nome: label, dados: summary.rows.map((row) => row[metric]) }],
+  insights: [
+    `${summary.playerName} soma ${summary.total[metric]} ${label.toLowerCase()} na temporada ${summary.season}.`,
+    `Fonte consultada em tempo real: oGol (${summary.sourceUrl}).`,
+  ],
+});
+
+const answerPlayerStatQuestion = async (question: string): Promise<DashboardData | null> => {
+  const parsed = playerStatQuestion(question);
   if (!parsed) return null;
+
+  const ogolSummary = await ogolService.getPlayerSeasonSummary(parsed.playerQuery).catch(() => null);
+  const ogolMetric = ogolMetricForParsedMetric[parsed.metric];
+  if (ogolSummary && ogolMetric && seasonIncludesYear(ogolSummary.season, parsed.season)) {
+    return dashboardFromOgolSummary(ogolSummary, ogolMetric, metricLabel[parsed.metric]);
+  }
+
   const player = await searchPlayerFromQuestion(parsed.playerQuery);
   if (!player?.url) return null;
   const detail = await sofaScoreService.getPlayerStats(player.url);
-  const rows = detail.seasons.filter((season) => season.season.includes(parsed.year));
+  const rows = detail.seasons.filter((season) => seasonIncludesYear(season.season, parsed.season));
   if (!rows.length) return null;
+
   const clubRows = rows.filter((season) => !isNationalTeamTournament(season.tournament || ""));
   const nationalRows = rows.filter((season) => isNationalTeamTournament(season.tournament || ""));
   const primaryRows = clubRows.length ? clubRows : rows;
+  const usedOnlyNationalRows = !clubRows.length && nationalRows.length > 0;
   const value = primaryRows.reduce((sum, season) => sum + Number(season[parsed.metric] || 0), 0);
   const labels = primaryRows.map((season) => season.tournament || season.season);
-  const metricLabel: Record<string, string> = {
-    goals: "Gols",
-    assists: "Assistencias",
-    matchesPlayed: "Partidas",
-    minutes: "Minutos",
-  };
+  const calendarYearWarning = asksCalendarYearTotal(question)
+    ? `A fonte disponivel retorna estatisticas por temporada/competicao, nao por ano civil exato; portanto isto nao deve ser lido como total fechado de ${parsed.season}.`
+    : `Consulta feita por temporada/competicao que inclui ${parsed.season}.`;
+
   return {
-    titulo: `${metricLabel[parsed.metric]} de ${detail.name} em ${parsed.year}`,
-    descricao: `Soma por competicao encontrada nas temporadas que incluem ${parsed.year}`,
+    titulo: `${metricLabel[parsed.metric]} de ${detail.name} nas temporadas que incluem ${parsed.season}`,
+    descricao: "Soma por competicao/temporada encontrada no perfil do atleta",
     tipo: "tabela",
     labels: labels.length ? labels : [detail.name],
     datasets: [{ nome: metricLabel[parsed.metric], dados: primaryRows.map((season) => Number(season[parsed.metric] || 0)) }],
     insights: [
-      `${detail.name} soma ${value} ${metricLabel[parsed.metric].toLowerCase()} nos registros de clube encontrados para ${parsed.year}.`,
-      nationalRows.length
+      `${detail.name} soma ${value} ${metricLabel[parsed.metric].toLowerCase()} nos registros ${usedOnlyNationalRows ? "de selecao/competicoes internacionais" : "de clube"} encontrados.`,
+      calendarYearWarning,
+      nationalRows.length && clubRows.length
         ? `Registros de selecao/competicoes internacionais foram separados para evitar inflar o total anual: ${nationalRows.map((row) => row.tournament).join(", ")}.`
         : "Consulta feita diretamente no perfil do atleta, nao em ranking de campeonato.",
-      "Totais anuais sao calculados a partir dos registros retornados pelo perfil do atleta.",
+    ],
+  };
+};
+
+const answerFreePlayerProfileQuestion = async (question: string): Promise<string | null> => {
+  const playerQuery = playerProfileQuestion(question);
+  if (!playerQuery) return null;
+
+  const player = await freeSportsDataService.searchPlayer(playerQuery);
+  if (!player?.strPlayer) return null;
+
+  const profile = freeSportsDataService.mapPlayerProfile(player);
+  const q = normalize(question);
+  const born = formatDateBR(profile.dateBorn);
+  const source = "Fonte: TheSportsDB API v1.";
+
+  if (/(idade|quantos anos)/.test(q)) {
+    if (profile.age === null) return `Nao encontrei a idade de **${profile.name}** na fonte gratuita consultada. ${source}`;
+    return `**${profile.name}** tem **${profile.age} anos**${born ? `, nascido em ${born}` : ""}. ${source}`;
+  }
+
+  if (/(posicao|posicoes|carreira|atuou|jogou)/.test(q)) {
+    if (!profile.position) {
+      return `Nao encontrei posicoes cadastradas para **${profile.name}** na fonte gratuita consultada. ${source}`;
+    }
+    return `Na fonte gratuita consultada, **${profile.name}** aparece como **${translatedPosition(profile.position)}**. Essa fonte nao traz um historico completo de todas as posicoes por temporada, entao trate isso como posicao cadastrada/principal. ${source}`;
+  }
+
+  if (/(onde joga|time|clube)/.test(q)) {
+    return profile.team
+      ? `Na fonte gratuita consultada, **${profile.name}** aparece no **${profile.team}**. ${source}`
+      : `Nao encontrei o clube atual de **${profile.name}** na fonte gratuita consultada. ${source}`;
+  }
+
+  if (/(nacionalidade|pais|selecao)/.test(q)) {
+    return profile.nationality
+      ? `**${profile.name}** aparece com nacionalidade **${profile.nationality}**. ${source}`
+      : `Nao encontrei a nacionalidade de **${profile.name}** na fonte gratuita consultada. ${source}`;
+  }
+
+  if (/(altura)/.test(q)) {
+    return profile.height
+      ? `**${profile.name}** aparece com altura **${profile.height}**. ${source}`
+      : `Nao encontrei a altura de **${profile.name}** na fonte gratuita consultada. ${source}`;
+  }
+
+  const lines = [
+    `**${profile.name}**`,
+    profile.team ? `- Clube/time cadastrado: ${profile.team}` : null,
+    profile.nationality ? `- Nacionalidade: ${profile.nationality}` : null,
+    profile.age !== null ? `- Idade: ${profile.age} anos${born ? ` (nascido em ${born})` : ""}` : null,
+    profile.position ? `- Posicao: ${translatedPosition(profile.position)}` : null,
+    profile.height ? `- Altura: ${profile.height}` : null,
+    "",
+    source,
+  ].filter((line): line is string => line !== null);
+
+  return lines.join("\n");
+};
+
+const answerFreeFootballTodayQuestion = async (question: string): Promise<DashboardData | null> => {
+  const q = normalize(question);
+  if (!/(hoje|jogos|partidas|agenda|calendario)/.test(q)) return null;
+  if (!/(futebol|soccer|geral|mundo|todos|todas)/.test(q)) return null;
+
+  const events = await freeSportsDataService.getFootballEventsByDate();
+  const mapped = events.map((event) => freeSportsDataService.mapEvent(event)).slice(0, 12);
+  if (!mapped.length) return null;
+
+  return {
+    titulo: "Jogos de futebol de hoje",
+    descricao: `Agenda global encontrada para ${new Date().toLocaleDateString("pt-BR")}`,
+    tipo: "tabela",
+    labels: mapped.map((event) => `${event.label} (${event.league})`),
+    datasets: [
+      { nome: "Gols mandante", dados: mapped.map((event) => event.homeScore) },
+      { nome: "Gols visitante", dados: mapped.map((event) => event.awayScore) },
+    ],
+    insights: [
+      `${mapped.length} partida(s) retornadas pela fonte gratuita.`,
+      "Placar 0 x 0 pode significar jogo ainda nao iniciado quando a fonte nao retornou placar.",
+      freeSourceInsight,
     ],
   };
 };
@@ -210,8 +415,8 @@ const teamNameInQuestion = (question: string, teams: any[]) => {
 
 const metricFromTeamQuestion = (question: string) => {
   const q = normalize(question);
-  if (/(posicao|posição|colocacao|colocação|ranking)/.test(q)) return { key: "position", label: "Posicao" };
-  if (/(vitorias|vitórias|ganhou|venceu)/.test(q)) return { key: "wins", label: "Vitorias" };
+  if (/(posicao|colocacao|ranking)/.test(q)) return { key: "position", label: "Posicao" };
+  if (/(vitorias|ganhou|venceu)/.test(q)) return { key: "wins", label: "Vitorias" };
   if (/(derrotas|perdeu)/.test(q)) return { key: "losses", label: "Derrotas" };
   if (/(empates|empatou)/.test(q)) return { key: "draws", label: "Empates" };
   if (/(saldo)/.test(q)) return { key: "goalDiff", label: "Saldo" };
@@ -223,7 +428,7 @@ const metricFromTeamQuestion = (question: string) => {
 
 const answerTeamStandingQuestion = async (question: string, league: League): Promise<DashboardData | null> => {
   const q = normalize(question);
-  if (!/(quantos?|quantas?|qual|quanto|pontos|posicao|posição|vitorias|vitórias|derrotas|empates|saldo|gols?)/.test(q)) {
+  if (!/(quantos?|quantas?|qual|quanto|pontos|posicao|vitorias|derrotas|empates|saldo|gols?)/.test(q)) {
     return null;
   }
   const { tournamentId, seasonId, seasonName } = await getCurrentSeason(league);
@@ -251,7 +456,7 @@ const answerTeamStandingQuestion = async (question: string, league: League): Pro
 
 const answerTeamScheduleQuestion = async (question: string, league: League): Promise<DashboardData | null> => {
   const q = normalize(question);
-  if (!/(proxim|próxim|agenda|calendario|calendário|jogos|partidas)/.test(q)) return null;
+  if (!/(proxim|agenda|calendario|jogos|partidas)/.test(q)) return null;
   const { tournamentId, seasonId, seasonName } = await getCurrentSeason(league);
   const standings = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/standings/total`);
   const rows = (standings?.standings || []).flatMap((standing: any) => standing?.rows || []);
@@ -262,7 +467,7 @@ const answerTeamScheduleQuestion = async (question: string, league: League): Pro
   if (!upcoming.length) return null;
   return {
     titulo: `Proximas partidas do ${row.team.name}`,
-    descricao: `Agenda independente do campeonato selecionado`,
+    descricao: "Agenda independente do campeonato selecionado",
     tipo: "tabela",
     labels: upcoming.map((match) => {
       const date = new Date(match.startTimestamp * 1000).toLocaleString("pt-BR", {
@@ -284,9 +489,9 @@ const answerTeamScheduleQuestion = async (question: string, league: League): Pro
 
 export async function resolveSportsDashboard(question: string, league: League): Promise<DashboardData | null> {
   const q = normalize(question);
-  const asksSpecificPlayerYear = Boolean(playerYearQuestion(question));
-  if (asksSpecificPlayerYear) {
-    return answerPlayerYearQuestion(question).catch(() => null);
+
+  if (playerStatQuestion(question)) {
+    return answerPlayerStatQuestion(question).catch(() => null);
   }
 
   const teamScheduleDashboard = await answerTeamScheduleQuestion(question, league).catch(() => null);
@@ -295,7 +500,7 @@ export async function resolveSportsDashboard(question: string, league: League): 
   const teamStandingDashboard = await answerTeamStandingQuestion(question, league).catch(() => null);
   if (teamStandingDashboard) return teamStandingDashboard;
 
-  if (/(classificacao|classificação|tabela|posicao|posição|pontos)/.test(q)) {
+  if (/(classificacao|tabela|posicao|pontos)/.test(q)) {
     const { tournamentId, seasonId, seasonName } = await getCurrentSeason(league);
     const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/standings/total`);
     const rows = (data?.standings?.[0]?.rows || []).slice(0, 20);
@@ -319,7 +524,7 @@ export async function resolveSportsDashboard(question: string, league: League): 
     };
   }
 
-  if (/(hoje|jogos|partidas|calendario|calendário)/.test(q) && !/(artilheiro|gol|assist|nota|rating|xg|xa)/.test(q)) {
+  if (/(hoje|jogos|partidas|calendario)/.test(q) && !/(artilheiro|cestinha|gol|pontos?|assist|nota|rating|xg|xa)/.test(q)) {
     const date = new Intl.DateTimeFormat("en-CA", {
       timeZone: "America/Sao_Paulo",
       year: "numeric",
@@ -331,29 +536,32 @@ export async function resolveSportsDashboard(question: string, league: League): 
     const events = (data?.events || [])
       .filter((event: any) => event?.tournament?.uniqueTournament?.id === tournamentId)
       .slice(0, 12);
-    if (!events.length) return null;
-
-    return {
-      titulo: `Partidas de hoje - ${league.name}`,
-      descricao: `Jogos encontrados para ${new Date().toLocaleDateString("pt-BR")}`,
-      tipo: "tabela",
-      labels: events.map((event: any) => `${event.homeTeam?.name || "Casa"} x ${event.awayTeam?.name || "Fora"}`),
-      datasets: [
-        { nome: "Gols casa", dados: events.map((event: any) => numberValue(event.homeScore?.current)) },
-        { nome: "Gols fora", dados: events.map((event: any) => numberValue(event.awayScore?.current)) },
-      ],
-      insights: [
-        `${events.length} partida(s) encontradas para hoje em ${league.name}.`,
-        sourceInsight(league, seasonName),
-      ],
-    };
+    if (events.length) {
+      return {
+        titulo: `Partidas de hoje - ${league.name}`,
+        descricao: `Jogos encontrados para ${new Date().toLocaleDateString("pt-BR")}`,
+        tipo: "tabela",
+        labels: events.map((event: any) => `${event.homeTeam?.name || "Casa"} x ${event.awayTeam?.name || "Fora"}`),
+        datasets: [
+          { nome: "Gols casa", dados: events.map((event: any) => numberValue(event.homeScore?.current)) },
+          { nome: "Gols fora", dados: events.map((event: any) => numberValue(event.awayScore?.current)) },
+        ],
+        insights: [
+          `${events.length} partida(s) encontradas para hoje em ${league.name}.`,
+          sourceInsight(league, seasonName),
+        ],
+      };
+    }
   }
 
-  if (!/(artilheiro|gols|gol|assist|participa|contribuic|nota|rating|melhores|xg|xa|jogadores|atletas|partidas|aparicoes|presencas)/.test(q)) {
+  const freeFootballTodayDashboard = await answerFreeFootballTodayQuestion(question).catch(() => null);
+  if (freeFootballTodayDashboard) return freeFootballTodayDashboard;
+
+  if (!asksLeagueRanking(question)) {
     return null;
   }
 
-  const metric = metricFromQuestion(question);
+  const metric = metricFromQuestion(question, league.sport);
   const { tournamentId, seasonId, seasonName } = await getCurrentSeason(league);
   const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/top-players/overall`);
   const sourcePlayers =
@@ -403,6 +611,16 @@ export async function resolveSportsDashboard(question: string, league: League): 
       sourceInsight(league, seasonName),
     ],
   };
+}
+
+export async function resolveSportsLocalResponse(question: string, league: League): Promise<SportsLocalResponse | null> {
+  const textAnswer = await answerFreePlayerProfileQuestion(question).catch(() => null);
+  if (textAnswer) return { format: "text", content: textAnswer };
+
+  const dashboard = await resolveSportsDashboard(question, league).catch(() => null);
+  if (dashboard) return { format: "dashboard", content: dashboard };
+
+  return null;
 }
 
 export function analyzeRawDataLocally(rawText: string): DashboardData | null {

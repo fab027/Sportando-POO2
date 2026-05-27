@@ -384,9 +384,7 @@ const Dashboard = () => {
       if (cancelled) return;
       setFavoriteAthleteTeams(
         results
-          .filter((entry): entry is PromiseFulfilledResult<{ team: string }> => entry.status === "fulfilled")
-          .map((entry) => entry.value.team)
-          .filter(Boolean)
+          .flatMap((entry) => (entry.status === "fulfilled" && entry.value.team ? [entry.value.team] : []))
       );
     });
     return () => {
