@@ -2,7 +2,11 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
+<<<<<<< HEAD
 // https://vitejs.dev/config/
+=======
+// https://vite.dev/config/
+>>>>>>> 26207cf3d95dadf6c86686adc5376455e05c2062
 export default defineConfig({
   server: {
     host: "::",

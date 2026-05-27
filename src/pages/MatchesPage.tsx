@@ -1,10 +1,16 @@
-import { useMemo, useState } from "react";
-import { Search, RefreshCw, Wifi, WifiOff } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Bell, BellRing, Search, RefreshCw, Wifi, WifiOff } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useSport } from "@/contexts/SportContext";
 import { useMatches, useTodayMatches, useLiveMatches } from "@/hooks/useSofaScoreData";
-import { SofaMatch } from "@/services/sofaScoreService";
+import { SofaLiveMatch, SofaMatch } from "@/services/sofaScoreService";
 import FilterBar, { FilterDef } from "@/components/FilterBar";
+
+declare global {
+  interface Window {
+    webkitAudioContext?: typeof AudioContext;
+  }
+}
 
 const normalizedStatus = (s: string) => s.toLowerCase();
 
@@ -54,6 +60,43 @@ const inDateRange = (ts: number, range: string) => {
   return true;
 };
 
+type TeamSide = "home" | "away";
+type WatchedMatch = { side: TeamSide };
+type ScoreSnapshot = { homeScore: number; awayScore: number };
+
+const createTone = (ctx: AudioContext, frequency: number, start: number, duration: number, type: OscillatorType) => {
+  const oscillator = ctx.createOscillator();
+  const gain = ctx.createGain();
+
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, start);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(0.18, start + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+
+  oscillator.connect(gain);
+  gain.connect(ctx.destination);
+  oscillator.start(start);
+  oscillator.stop(start + duration + 0.03);
+};
+
+const playGoalSound = (mood: "celebration" | "lament") => {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return;
+
+  const ctx = new AudioCtx();
+  const now = ctx.currentTime;
+  const notes = mood === "celebration"
+    ? [523.25, 659.25, 783.99, 1046.5]
+    : [392, 329.63, 261.63, 196];
+
+  notes.forEach((frequency, index) => {
+    createTone(ctx, frequency, now + index * 0.13, 0.18, mood === "celebration" ? "triangle" : "sine");
+  });
+
+  window.setTimeout(() => void ctx.close(), 1200);
+};
+
 const MatchCard = ({ m }: { m: SofaMatch & { _type?: string } }) => {
   const st = statusConfig(m.status);
   const isUpcoming = m._type === "upcoming" || m.homeScore === null;
@@ -93,6 +136,8 @@ const MatchesPage = () => {
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState<"league" | "today" | "live">("league");
   const [filters, setFilters] = useState<Record<string, string>>({ status: "all", date: "all" });
+  const [watchedMatches, setWatchedMatches] = useState<Record<number, WatchedMatch>>({});
+  const scoreSnapshots = useRef<Record<number, ScoreSnapshot>>({});
 
   const { lastMatches, nextMatches, allMatches, status, error, refetch } = useMatches(league.sofascoreUrl);
   const { data: todayMatches, status: todayStatus, refetch: refetchToday } = useTodayMatches();
@@ -139,6 +184,48 @@ const MatchesPage = () => {
   const filtered = useMemo(() => (tab === "league" ? applyFilters(allMatches) : []), [tab, allMatches, search, filters]);
   const filteredToday = useMemo(() => (tab === "today" ? applyFilters(todayMatches) : []), [tab, todayMatches, search, filters]);
   const filteredLive = useMemo(() => (tab === "live" ? applyFilters(liveMatches) : []), [tab, liveMatches, search, filters]);
+
+  useEffect(() => {
+    const nextSnapshots: Record<number, ScoreSnapshot> = {};
+
+    liveMatches.forEach((match) => {
+      const previous = scoreSnapshots.current[match.id];
+      nextSnapshots[match.id] = { homeScore: match.homeScore, awayScore: match.awayScore };
+
+      if (!previous) return;
+
+      const watched = watchedMatches[match.id];
+      if (!watched) return;
+
+      const homeGoals = Math.max(0, match.homeScore - previous.homeScore);
+      const awayGoals = Math.max(0, match.awayScore - previous.awayScore);
+      if (homeGoals === 0 && awayGoals === 0) return;
+
+      const scoringSide: TeamSide | null = homeGoals > awayGoals ? "home" : awayGoals > homeGoals ? "away" : null;
+      if (!scoringSide) return;
+
+      playGoalSound(scoringSide === watched.side ? "celebration" : "lament");
+    });
+
+    scoreSnapshots.current = nextSnapshots;
+  }, [liveMatches, watchedMatches]);
+
+  const toggleWatchedMatch = (match: SofaLiveMatch, side: TeamSide) => {
+    setWatchedMatches((current) => {
+      const watched = current[match.id];
+      if (watched?.side === side) {
+        const { [match.id]: _removed, ...rest } = current;
+        return rest;
+      }
+
+      return {
+        ...current,
+        [match.id]: {
+          side,
+        },
+      };
+    });
+  };
 
   const handleRefetch = () => {
     if (tab === "league") refetch();
@@ -272,6 +359,36 @@ const MatchesPage = () => {
               <span className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-destructive/10 text-destructive">🔴 Ao Vivo</span>
               <span className="text-xs text-muted-foreground">{m.tournament}</span>
               {"period" in m && m.period && <span className="text-xs text-muted-foreground">{m.period}</span>}
+            </div>
+            <div className="mt-4 flex flex-col items-center gap-2 border-t border-border pt-3 sm:flex-row sm:justify-center">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                {watchedMatches[m.id] ? <BellRing className="h-3.5 w-3.5 text-sport" /> : <Bell className="h-3.5 w-3.5" />}
+                Notificar gols torcendo por:
+              </span>
+              <div className="flex max-w-full gap-2">
+                {(["home", "away"] as TeamSide[]).map((side) => {
+                  const active = watchedMatches[m.id]?.side === side;
+                  const teamName = side === "home" ? m.homeTeam : m.awayTeam;
+                  const opponentName = side === "home" ? m.awayTeam : m.homeTeam;
+
+                  return (
+                    <button
+                      key={side}
+                      type="button"
+                      onClick={() => toggleWatchedMatch(m, side)}
+                      title={`Tocar comemoracao para gol do ${teamName} e lamentacao para gol do ${opponentName}`}
+                      className={`inline-flex max-w-[11rem] items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                        active
+                          ? "border-sport bg-sport text-sport-foreground"
+                          : "border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground"
+                      }`}
+                    >
+                      {active ? <BellRing className="h-3.5 w-3.5 shrink-0" /> : <Bell className="h-3.5 w-3.5 shrink-0" />}
+                      <span className="truncate">{teamName}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         ))}
