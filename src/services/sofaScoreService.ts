@@ -4,6 +4,7 @@ const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const SPORTS_DATA_URL = `${SUPABASE_URL}/functions/v1/sports-data`;
 const SOFASCORE_PROXY_URL = "/sofascore-api";
 const SPORTS_DATA_TIMEOUT_MS = 4000;
+const SOFASCORE_PROXY_TIMEOUT_MS = 10_000;
 
 const teamImageUrl = (teamId?: number | null) =>
   teamId ? `https://api.sofascore.app/api/v1/team/${teamId}/image` : null;
@@ -11,9 +12,13 @@ const playerImageUrl = (playerId?: number | null) =>
   playerId ? `https://api.sofascore.app/api/v1/player/${playerId}/image` : null;
 
 async function sofaFetch(path: string) {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), SOFASCORE_PROXY_TIMEOUT_MS);
   const res = await fetch(`${SOFASCORE_PROXY_URL}${path}`, {
+    cache: "no-store",
     headers: { Accept: "application/json" },
-  });
+    signal: controller.signal,
+  }).finally(() => globalThis.clearTimeout(timeout));
   if (!res.ok) throw new Error(`SofaScore HTTP ${res.status}`);
   return res.json();
 }
@@ -425,6 +430,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
         const liveClock = getLiveClock(event);
         return {
           id: mapped.id,
+          startTimestamp: mapped.startTimestamp,
           homeTeamId: mapped.homeTeamId,
           awayTeamId: mapped.awayTeamId,
           homeTeam: mapped.homeTeam,
@@ -587,6 +593,7 @@ async function callSportsData(body: Record<string, unknown>) {
     const timeout = window.setTimeout(() => controller.abort(), SPORTS_DATA_TIMEOUT_MS);
     const res = await fetch(SPORTS_DATA_URL, {
       method: "POST",
+      cache: "no-store",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${SUPABASE_KEY}`,
@@ -684,6 +691,7 @@ export type SofaTopPlayer = {
 
 export type TodayMatch = {
   id: number;
+  startTimestamp?: number;
   homeTeamId?: number | null;
   awayTeamId?: number | null;
   homeTeam: string;

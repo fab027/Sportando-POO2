@@ -620,6 +620,7 @@ serve(async (req) => {
           const mapped = mapSofaEvent(event);
           return {
             id: mapped.id,
+            startTimestamp: mapped.startTimestamp,
             homeTeamId: mapped.homeTeamId,
             awayTeamId: mapped.awayTeamId,
             homeTeam: mapped.homeTeam,
