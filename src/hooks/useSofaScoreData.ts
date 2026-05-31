@@ -37,6 +37,25 @@ function cached<T>(key: string, fn: () => Promise<T>, force = false): Promise<T>
 
 type Status = "idle" | "loading" | "success" | "error";
 
+function todayLocalIso() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function saoPauloIsoFromTimestamp(startTimestamp?: number | null) {
+  if (!startTimestamp) return null;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(startTimestamp * 1000));
+}
+
 // ─── Standings ──────────────────────────────────────────────────────────────
 export function useStandings(leagueUrl: string, tableType: "total" | "home" | "away" = "total") {
   const [data, setData] = useState<SofaTeamStanding[]>([]);
@@ -157,8 +176,12 @@ export function useTodayMatches() {
   const fetchData = useCallback(async (options?: FetchOptions) => {
     setStatus("loading");
     try {
-      const res = await cached("today_matches_v3", () => sofaScoreService.getTodayMatches(), options?.force);
-      setData(Array.isArray(res) && res.length > 0 ? res : getFallbackTodayMatches());
+      const res = await cached("today_matches_v4", () => sofaScoreService.getTodayMatches(), options?.force);
+      const todayIso = todayLocalIso();
+      const matches = Array.isArray(res)
+        ? res.filter((match) => saoPauloIsoFromTimestamp(match.startTimestamp) === todayIso)
+        : [];
+      setData(matches.length > 0 ? matches : getFallbackTodayMatches());
       setStatus("success");
     } catch {
       setData(getFallbackTodayMatches());

@@ -3,20 +3,14 @@ import type { DashboardData } from "@/components/DynamicDashboard";
 import type { League } from "@/data/leagues";
 import { freeSportsDataService } from "@/services/freeSportsDataService";
 import { ogolService, type OgolSeasonMetric, type OgolSeasonSummary } from "@/services/ogolService";
-import { sofaScoreService } from "@/services/sofaScoreService";
-
-const SOFASCORE_PROXY_URL = "/sofascore-api";
+import { fetchSofaScoreJson, sofaScoreService } from "@/services/sofaScoreService";
 
 export type SportsLocalResponse =
   | { format: "text"; content: string }
   | { format: "dashboard"; content: DashboardData };
 
 const sofaFetch = async (path: string) => {
-  const res = await fetch(`${SOFASCORE_PROXY_URL}${path}`, {
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`SofaScore HTTP ${res.status}`);
-  return res.json();
+  return fetchSofaScoreJson(path);
 };
 
 const normalize = (value: string) =>
@@ -93,6 +87,16 @@ const formatDateBR = (date?: string) => {
   const parsed = new Date(`${date}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime())) return date;
   return parsed.toLocaleDateString("pt-BR", { timeZone: "UTC" });
+};
+
+const saoPauloIsoFromTimestamp = (startTimestamp?: number | null) => {
+  if (!startTimestamp) return null;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(startTimestamp * 1000));
 };
 
 const translatedPosition = (position: string) => {
@@ -535,6 +539,7 @@ export async function resolveSportsDashboard(question: string, league: League): 
     const data = await sofaFetch(`/sport/${league.sport}/scheduled-events/${date}`);
     const events = (data?.events || [])
       .filter((event: any) => event?.tournament?.uniqueTournament?.id === tournamentId)
+      .filter((event: any) => saoPauloIsoFromTimestamp(Number(event?.startTimestamp || 0)) === date)
       .slice(0, 12);
     if (events.length) {
       return {

@@ -3,18 +3,102 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const SPORTS_DATA_URL = `${SUPABASE_URL}/functions/v1/sports-data`;
 const SOFASCORE_PROXY_URL = "/sofascore-api";
+const SCRAPERFC_DATA_URL = "/scraperfc-api/sports-data";
+const SCRAPERFC_RAW_URL = "/scraperfc-api/sofascore";
 const SPORTS_DATA_TIMEOUT_MS = 4000;
+const SCRAPERFC_TIMEOUT_MS = 25000;
+const SCRAPERFC_COOLDOWN_MS = 60_000;
+let scraperFcUnavailableUntil = 0;
 
 const teamImageUrl = (teamId?: number | null) =>
   teamId ? `https://api.sofascore.app/api/v1/team/${teamId}/image` : null;
 const playerImageUrl = (playerId?: number | null) =>
   playerId ? `https://api.sofascore.app/api/v1/player/${playerId}/image` : null;
 
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = SPORTS_DATA_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => window.clearTimeout(timeout));
+}
+
+export async function fetchSofaScoreJson(path: string) {
+  try {
+    const res = await fetch(`${SOFASCORE_PROXY_URL}${path}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) throw new Error(`SofaScore HTTP ${res.status}`);
+    return res.json();
+  } catch (directError) {
+    if (!import.meta.env.DEV || Date.now() < scraperFcUnavailableUntil) {
+      throw directError;
+    }
+
+    try {
+      const res = await fetchWithTimeout(
+        `${SCRAPERFC_RAW_URL}?path=${encodeURIComponent(path)}`,
+        { headers: { Accept: "application/json" } },
+        SCRAPERFC_TIMEOUT_MS
+      );
+      if (!res.ok) throw new Error(`ScraperFC HTTP ${res.status}`);
+      return res.json();
+    } catch {
+      scraperFcUnavailableUntil = Date.now() + SCRAPERFC_COOLDOWN_MS;
+      throw directError;
+    }
+  }
+}
+
 async function sofaFetch(path: string) {
-  const res = await fetch(`${SOFASCORE_PROXY_URL}${path}`, {
-    headers: { Accept: "application/json" },
+  return fetchSofaScoreJson(path);
+}
+
+async function callScraperFcSportsData(body: Record<string, unknown>) {
+  if (!import.meta.env.DEV || Date.now() < scraperFcUnavailableUntil) {
+    throw new Error("ScraperFC indisponivel");
+  }
+
+  try {
+    const res = await fetchWithTimeout(
+      SCRAPERFC_DATA_URL,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(body),
+      },
+      SCRAPERFC_TIMEOUT_MS
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `ScraperFC HTTP ${res.status}`);
+    }
+    return res.json();
+  } catch (error) {
+    scraperFcUnavailableUntil = Date.now() + SCRAPERFC_COOLDOWN_MS;
+    throw error;
+  }
+}
+
+async function callLegacySportsData(body: Record<string, unknown>) {
+  if (import.meta.env.DEV) {
+    try {
+      return await callLocalSofaScore(body);
+    } catch {
+      // Some legacy actions still only exist in the Edge Function.
+    }
+  }
+
+  const res = await fetchWithTimeout(SPORTS_DATA_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+    },
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`SofaScore HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
   return res.json();
 }
 
@@ -347,6 +431,19 @@ function todayLocalIso() {
   }).format(new Date());
 }
 
+function saoPauloIsoFromTimestamp(startTimestamp?: number | null) {
+  if (!startTimestamp) return null;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(startTimestamp * 1000));
+}
+
+const isEventOnLocalDate = (event: any, localIsoDate: string) =>
+  saoPauloIsoFromTimestamp(Number(event?.startTimestamp || 0)) === localIsoDate;
+
 async function callLocalSofaScore(body: Record<string, unknown>) {
   const action = body.action;
 
@@ -416,9 +513,11 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
   }
 
   if (action === "today_matches") {
-    const data = await sofaFetch(`/sport/football/scheduled-events/${todayLocalIso()}`);
+    const todayIso = todayLocalIso();
+    const data = await sofaFetch(`/sport/football/scheduled-events/${todayIso}`);
     const events = Array.isArray(data?.events) ? data.events : [];
     return events
+      .filter((event: any) => isEventOnLocalDate(event, todayIso))
       .sort((a: any, b: any) => (a.startTimestamp || 0) - (b.startTimestamp || 0))
       .map((event: any): TodayMatch => {
         const mapped = mapEvent(event);
@@ -434,6 +533,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
           homeScore: mapped.homeScore,
           awayScore: mapped.awayScore,
           status: mapped.status,
+          startTimestamp: mapped.startTimestamp,
           time:
             mapped.status === "Live"
               ? liveClock.minute || liveClock.period
@@ -574,33 +674,10 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
 }
 
 async function callSportsData(body: Record<string, unknown>) {
-  if (import.meta.env.DEV) {
-    try {
-      return await callLocalSofaScore(body);
-    } catch {
-      // Some legacy actions still only exist in the Edge Function.
-    }
-  }
-
   try {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), SPORTS_DATA_TIMEOUT_MS);
-    const res = await fetch(SPORTS_DATA_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    }).finally(() => window.clearTimeout(timeout));
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || `HTTP ${res.status}`);
-    }
-    return res.json();
+    return await callLegacySportsData(body);
   } catch (error) {
-    if (import.meta.env.DEV) return callLocalSofaScore(body);
+    if (import.meta.env.DEV) return callScraperFcSportsData(body);
     throw error;
   }
 }
@@ -693,6 +770,7 @@ export type TodayMatch = {
   homeScore: number | null;
   awayScore: number | null;
   status: string;
+  startTimestamp?: number;
   time: string | null;
   tournament: string;
   country?: string;
