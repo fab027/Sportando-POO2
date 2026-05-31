@@ -543,6 +543,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
                   minute: "2-digit",
                 }),
           tournament: mapped.tournament,
+          tournamentId: mapped.tournamentId,
           country: eventCountry(event),
           venue: mapped.venue,
         };
@@ -773,6 +774,7 @@ export type TodayMatch = {
   startTimestamp?: number;
   time: string | null;
   tournament: string;
+  tournamentId?: number | null;
   country?: string;
   venue?: string | null;
 };

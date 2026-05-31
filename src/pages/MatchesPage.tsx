@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, BellRing, Search, RefreshCw, Wifi, WifiOff } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useSport } from "@/contexts/SportContext";
 import { useMatches, useTodayMatches, useLiveMatches } from "@/hooks/useSofaScoreData";
-import { SofaLiveMatch, SofaMatch } from "@/services/sofaScoreService";
+import { SofaLiveMatch, SofaMatch, TodayMatch } from "@/services/sofaScoreService";
 import FilterBar, { FilterDef } from "@/components/FilterBar";
+import type { League } from "@/data/leagues";
 
 declare global {
   interface Window {
@@ -59,6 +60,122 @@ const inDateRange = (ts: number, range: string) => {
   if (range === "past") return date < now;
   return true;
 };
+
+type MatchKind = "past" | "upcoming" | "live";
+type MatchListItem = SofaMatch & { _type?: MatchKind; minute?: string | null; period?: string | null };
+
+const extractTournamentId = (url: string) => {
+  const match = url.match(/\/(\d+)(?:[/?#].*)?$/);
+  return match ? Number(match[1]) : null;
+};
+
+const normalizeText = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const isSameTournament = (match: { tournament: string; tournamentId?: number | null }, league: League) => {
+  const leagueTournamentId = extractTournamentId(league.sofascoreUrl);
+  if (leagueTournamentId && match.tournamentId === leagueTournamentId) return true;
+
+  const tournamentName = normalizeText(match.tournament);
+  const leagueName = normalizeText(league.name);
+  return Boolean(tournamentName && leagueName && (tournamentName.includes(leagueName) || leagueName.includes(tournamentName)));
+};
+
+const matchKindFromStatus = (status: string): MatchKind =>
+  isLive(status) ? "live" : isFinished(status) ? "past" : "upcoming";
+
+const liveToMatch = (match: SofaLiveMatch): MatchListItem => ({
+  id: match.id,
+  homeTeamId: match.homeTeamId,
+  awayTeamId: match.awayTeamId,
+  homeTeam: match.homeTeam,
+  awayTeam: match.awayTeam,
+  homeTeamImageUrl: match.homeTeamImageUrl,
+  awayTeamImageUrl: match.awayTeamImageUrl,
+  homeScore: match.homeScore,
+  awayScore: match.awayScore,
+  status: match.status,
+  startTimestamp: 0,
+  tournament: match.tournament,
+  tournamentId: match.tournamentId,
+  roundInfo: null,
+  venue: null,
+  minute: match.minute,
+  period: match.period,
+  _type: "live",
+});
+
+const todayToMatch = (match: TodayMatch): MatchListItem => ({
+  id: match.id,
+  homeTeamId: match.homeTeamId,
+  awayTeamId: match.awayTeamId,
+  homeTeam: match.homeTeam,
+  awayTeam: match.awayTeam,
+  homeTeamImageUrl: match.homeTeamImageUrl,
+  awayTeamImageUrl: match.awayTeamImageUrl,
+  homeScore: match.homeScore,
+  awayScore: match.awayScore,
+  status: match.status,
+  startTimestamp: match.startTimestamp || 0,
+  tournament: match.tournament,
+  tournamentId: match.tournamentId,
+  roundInfo: null,
+  venue: match.venue,
+  minute: isLive(match.status) ? match.time : null,
+  _type: matchKindFromStatus(match.status),
+});
+
+const mergeMatches = (matches: MatchListItem[]) => {
+  const priority: Record<MatchKind, number> = { live: 3, past: 2, upcoming: 1 };
+  const byId = new Map<number, MatchListItem>();
+
+  matches.forEach((match) => {
+    const current = byId.get(match.id);
+    const nextPriority = priority[match._type || matchKindFromStatus(match.status)];
+    const currentPriority = current ? priority[current._type || matchKindFromStatus(current.status)] : 0;
+    if (!current || nextPriority >= currentPriority) {
+      byId.set(match.id, {
+        ...current,
+        ...match,
+        startTimestamp: match.startTimestamp || current?.startTimestamp || 0,
+        venue: match.venue ?? current?.venue ?? null,
+      });
+    }
+  });
+
+  return Array.from(byId.values()).sort((a, b) => {
+    if (!a.startTimestamp) return 1;
+    if (!b.startTimestamp) return -1;
+    return a.startTimestamp - b.startTimestamp;
+  });
+};
+
+const TeamName = ({
+  name,
+  imageUrl,
+  align = "left",
+}: {
+  name: string;
+  imageUrl?: string | null;
+  align?: "left" | "right";
+}) => (
+  <span className={`inline-flex min-w-0 items-center gap-2 ${align === "right" ? "justify-end" : ""}`}>
+    {imageUrl ? (
+      <img src={imageUrl} alt="" loading="lazy" className="h-6 w-6 shrink-0 object-contain" />
+    ) : (
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-sport/10 text-[10px] font-semibold text-sport">
+        {name.slice(0, 2).toUpperCase()}
+      </span>
+    )}
+    <span className="shrink-0 text-muted-foreground">-</span>
+    <span className="truncate">{name}</span>
+  </span>
+);
 
 type TeamSide = "home" | "away";
 type WatchedMatch = { side: TeamSide };
@@ -131,6 +248,46 @@ const MatchCard = ({ m }: { m: SofaMatch & { _type?: string } }) => {
   );
 };
 
+const MatchListCard = ({ m, liveTone = false }: { m: MatchListItem; liveTone?: boolean }) => {
+  const st = statusConfig(m.status);
+  const isUpcoming = m._type === "upcoming" || m.homeScore === null || m.awayScore === null;
+
+  return (
+    <div className={`rounded-xl border bg-card p-5 hover:shadow-md transition-shadow ${liveTone ? "border-destructive/30" : "border-border"}`}>
+      <div className="flex items-center gap-4">
+        <div className="min-w-0 flex-1 text-right">
+          <p className="font-display font-semibold text-foreground">
+            <TeamName name={m.homeTeam} imageUrl={m.homeTeamImageUrl} align="right" />
+          </p>
+        </div>
+        <div className="flex min-w-[4.5rem] items-center justify-center gap-2 text-center">
+          {!isUpcoming ? (
+            <span className={`font-display text-xl font-bold ${liveTone ? "text-destructive" : "text-foreground"}`}>
+              {m.homeScore} - {m.awayScore}
+            </span>
+          ) : (
+            <span className="text-sm font-medium text-muted-foreground">{m.minute || "vs"}</span>
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="font-display font-semibold text-foreground">
+            <TeamName name={m.awayTeam} imageUrl={m.awayTeamImageUrl} />
+          </p>
+        </div>
+      </div>
+      <div className="mt-2 flex items-center justify-center gap-3 flex-wrap">
+        <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${st.cls}`}>{st.text}</span>
+        {m.roundInfo && <span className="text-xs text-muted-foreground">Rodada {m.roundInfo}</span>}
+        <span className="text-xs text-muted-foreground">{m.tournament}</span>
+        {m.startTimestamp > 0 && <span className="text-xs text-muted-foreground">{formatDate(m.startTimestamp)}</span>}
+        {m.minute && !isUpcoming && <span className="text-xs font-medium text-destructive">{m.minute}</span>}
+        {m.period && <span className="text-xs text-muted-foreground">{m.period}</span>}
+        <span className="text-xs text-muted-foreground">Local: {m.venue || "TBD"}</span>
+      </div>
+    </div>
+  );
+};
+
 const MatchesPage = () => {
   const { league } = useSport();
   const [search, setSearch] = useState("");
@@ -143,7 +300,27 @@ const MatchesPage = () => {
   const { data: todayMatches, status: todayStatus, refetch: refetchToday } = useTodayMatches();
   const { data: liveMatches, status: liveStatus, refetch: refetchLive } = useLiveMatches();
 
-  const isLoading = tab === "league" ? status === "loading" : tab === "today" ? todayStatus === "loading" : liveStatus === "loading";
+  const isLoading =
+    tab === "league"
+      ? status === "loading" || todayStatus === "loading" || liveStatus === "loading"
+      : tab === "today"
+        ? todayStatus === "loading"
+        : liveStatus === "loading";
+
+  const leagueMatches = useMemo(() => {
+    const leagueToday = todayMatches.filter((match) => isSameTournament(match, league)).map(todayToMatch);
+    const leagueLive = liveMatches.filter((match) => isSameTournament(match, league)).map(liveToMatch);
+    return mergeMatches([...(allMatches as MatchListItem[]), ...leagueToday, ...leagueLive]);
+  }, [allMatches, todayMatches, liveMatches, league]);
+
+  const leagueMatchCounts = useMemo(
+    () => ({
+      recent: leagueMatches.filter((match) => isFinished(match.status)).length,
+      live: leagueMatches.filter((match) => isLive(match.status)).length,
+      scheduled: leagueMatches.filter((match) => isScheduled(match.status)).length,
+    }),
+    [leagueMatches]
+  );
 
   const filterDefs: FilterDef[] = [
     {
@@ -167,7 +344,7 @@ const MatchesPage = () => {
     },
   ];
 
-  const applyFilters = <T extends { homeTeam: string; awayTeam: string; tournament: string; status: string; startTimestamp?: number }>(
+  const applyFilters = useCallback(<T extends { homeTeam: string; awayTeam: string; tournament: string; status: string; startTimestamp?: number }>(
     list: T[]
   ): T[] => {
     const q = search.toLowerCase();
@@ -176,14 +353,14 @@ const MatchesPage = () => {
       if (filters.status === "live" && !isLive(m.status)) return false;
       if (filters.status === "scheduled" && !isScheduled(m.status)) return false;
       if (filters.status === "finished" && !isFinished(m.status)) return false;
-      if (m.startTimestamp !== undefined && !inDateRange(m.startTimestamp, filters.date)) return false;
+      if (m.startTimestamp && !inDateRange(m.startTimestamp, filters.date)) return false;
       return true;
     });
-  };
+  }, [filters.date, filters.status, search]);
 
-  const filtered = useMemo(() => (tab === "league" ? applyFilters(allMatches) : []), [tab, allMatches, search, filters]);
-  const filteredToday = useMemo(() => (tab === "today" ? applyFilters(todayMatches) : []), [tab, todayMatches, search, filters]);
-  const filteredLive = useMemo(() => (tab === "live" ? applyFilters(liveMatches) : []), [tab, liveMatches, search, filters]);
+  const filtered = useMemo(() => (tab === "league" ? applyFilters(leagueMatches) : []), [tab, leagueMatches, applyFilters]);
+  const filteredToday = useMemo(() => (tab === "today" ? applyFilters(todayMatches) : []), [tab, todayMatches, applyFilters]);
+  const filteredLive = useMemo(() => (tab === "live" ? applyFilters(liveMatches) : []), [tab, liveMatches, applyFilters]);
 
   useEffect(() => {
     const nextSnapshots: Record<number, ScoreSnapshot> = {};
@@ -228,7 +405,11 @@ const MatchesPage = () => {
   };
 
   const handleRefetch = () => {
-    if (tab === "league") refetch();
+    if (tab === "league") {
+      void refetch({ force: true });
+      void refetchToday({ force: true });
+      void refetchLive({ force: true });
+    }
     else if (tab === "today") refetchToday();
     else refetchLive();
   };
@@ -243,7 +424,7 @@ const MatchesPage = () => {
               <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Carregando...</>
             ) : (
               <><Wifi className="h-3.5 w-3.5 text-sport" />
-                {tab === "league" && <>{lastMatches.length} recentes · {nextMatches.length} agendadas — {league.name}</>}
+                {tab === "league" && <>{leagueMatchCounts.recent} recentes · {leagueMatchCounts.live} ao vivo · {leagueMatchCounts.scheduled} agendadas — {league.name}</>}
                 {tab === "today" && <>{todayMatches.length} jogos hoje</>}
                 {tab === "live" && <>{liveMatches.length} ao vivo agora</>}
               </>
@@ -309,7 +490,7 @@ const MatchesPage = () => {
         {tab === "league" && !isLoading && filtered.length === 0 && !error && (
           <p className="text-center text-sm text-muted-foreground py-8">Nenhuma partida encontrada com os filtros aplicados.</p>
         )}
-        {tab === "league" && filtered.map((m) => (<MatchCard key={`${m.id}_${m._type ?? "match"}`} m={m} />))}
+        {tab === "league" && filtered.map((m) => (<MatchListCard key={`${m.id}_${m._type ?? "match"}`} m={m} liveTone={isLive(m.status)} />))}
 
         {tab === "today" && !isLoading && filteredToday.length === 0 && (
           <p className="text-center text-sm text-muted-foreground py-8">Nenhum jogo encontrado para os filtros aplicados.</p>
@@ -319,7 +500,11 @@ const MatchesPage = () => {
           return (
             <div key={m.id} className="rounded-xl border border-border bg-card p-5 hover:shadow-md transition-shadow">
               <div className="flex items-center gap-4">
-                <div className="text-right flex-1"><p className="font-display font-semibold text-foreground">{m.homeTeam}</p></div>
+                <div className="min-w-0 flex-1 text-right">
+                  <p className="font-display font-semibold text-foreground">
+                    <TeamName name={m.homeTeam} imageUrl={m.homeTeamImageUrl} align="right" />
+                  </p>
+                </div>
                 <div className="text-center">
                   {m.homeScore !== null ? (
                     <span className="font-display text-xl font-bold text-foreground">{m.homeScore} — {m.awayScore}</span>
@@ -327,7 +512,11 @@ const MatchesPage = () => {
                     <span className="text-sm font-medium text-muted-foreground">{m.time || "vs"}</span>
                   )}
                 </div>
-                <div className="flex-1"><p className="font-display font-semibold text-foreground">{m.awayTeam}</p></div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-display font-semibold text-foreground">
+                    <TeamName name={m.awayTeam} imageUrl={m.awayTeamImageUrl} />
+                  </p>
+                </div>
               </div>
               <div className="mt-2 flex items-center justify-center gap-3 flex-wrap">
                 <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${st.cls}`}>{st.text}</span>
@@ -348,12 +537,20 @@ const MatchesPage = () => {
         {tab === "live" && filteredLive.map((m) => (
           <div key={m.id} className="rounded-xl border border-destructive/30 bg-card p-5 hover:shadow-md transition-shadow">
             <div className="flex items-center gap-4">
-              <div className="text-right flex-1"><p className="font-display font-semibold text-foreground">{m.homeTeam}</p></div>
+              <div className="min-w-0 flex-1 text-right">
+                <p className="font-display font-semibold text-foreground">
+                  <TeamName name={m.homeTeam} imageUrl={m.homeTeamImageUrl} align="right" />
+                </p>
+              </div>
               <div className="text-center">
                 <span className="font-display text-xl font-bold text-destructive">{m.homeScore} — {m.awayScore}</span>
                 {m.minute && <p className="text-xs text-destructive font-medium mt-1">{m.minute}</p>}
               </div>
-              <div className="flex-1"><p className="font-display font-semibold text-foreground">{m.awayTeam}</p></div>
+              <div className="min-w-0 flex-1">
+                <p className="font-display font-semibold text-foreground">
+                  <TeamName name={m.awayTeam} imageUrl={m.awayTeamImageUrl} />
+                </p>
+              </div>
             </div>
             <div className="mt-2 flex items-center justify-center gap-3">
               <span className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-destructive/10 text-destructive">🔴 Ao Vivo</span>
@@ -369,6 +566,7 @@ const MatchesPage = () => {
                 {(["home", "away"] as TeamSide[]).map((side) => {
                   const active = watchedMatches[m.id]?.side === side;
                   const teamName = side === "home" ? m.homeTeam : m.awayTeam;
+                  const teamImageUrl = side === "home" ? m.homeTeamImageUrl : m.awayTeamImageUrl;
                   const opponentName = side === "home" ? m.awayTeam : m.homeTeam;
 
                   return (
@@ -384,7 +582,7 @@ const MatchesPage = () => {
                       }`}
                     >
                       {active ? <BellRing className="h-3.5 w-3.5 shrink-0" /> : <Bell className="h-3.5 w-3.5 shrink-0" />}
-                      <span className="truncate">{teamName}</span>
+                      <TeamName name={teamName} imageUrl={teamImageUrl} />
                     </button>
                   );
                 })}
@@ -393,7 +591,7 @@ const MatchesPage = () => {
           </div>
         ))}
 
-        {error && allMatches.length === 0 && tab === "league" && (
+        {error && leagueMatches.length === 0 && tab === "league" && (
           <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-6 text-center">
             <WifiOff className="mx-auto h-8 w-8 text-destructive/50 mb-3" />
             <p className="text-sm text-muted-foreground mb-3">Não foi possível carregar dados.</p>
