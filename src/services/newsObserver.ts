@@ -36,25 +36,7 @@ type RawNewsItem = Partial<NewsItem> & {
   image_url?: string;
 };
 
-type EspnApiArticle = {
-  id?: string;
-  headline?: string;
-  title?: string;
-  description?: string;
-  published?: string;
-  lastModified?: string;
-  nowId?: string;
-  links?: {
-    web?: { href?: string };
-    mobile?: { href?: string };
-    api?: { news?: { href?: string } };
-  };
-  images?: Array<{ url?: string; name?: string; width?: number; height?: number }>;
-  categories?: Array<{ description?: string; type?: string; sportId?: number | string }>;
-};
-
 const NEWS_SOURCES_KEY = "sportando.newsSources.v2";
-const ESPN_SOCCER_NEWS_LEAGUES = ["all", "bra.1", "eng.1", "esp.1", "ita.1", "ger.1", "fra.1", "uefa.champions", "conmebol.libertadores"];
 
 const htmlEntities: Record<string, string> = {
   nbsp: " ",
@@ -309,68 +291,6 @@ const parseKnownSourceLatest = (html: string, source: NewsSource, sport: string,
   return [];
 };
 
-const isEspnSource = (source: NewsSource) => normalizeDomain(source.url).endsWith("espn.com.br");
-
-const espnApiUrls = (sport: string, dev = false) => {
-  const prefix = dev ? "/espn-api" : "https://site.api.espn.com";
-  if (sport === "basketball") {
-    return [`${prefix}/apis/site/v2/sports/basketball/nba/news?region=br&lang=pt&limit=50`];
-  }
-  return ESPN_SOCCER_NEWS_LEAGUES.map(
-    (league) => `${prefix}/apis/site/v2/sports/soccer/${league}/news?region=br&lang=pt&limit=30`
-  );
-};
-
-const normalizeEspnApiArticle = (article: EspnApiArticle, source: NewsSource, sport: string) => {
-  const url = article.links?.web?.href || article.links?.mobile?.href || "";
-  const image = [...(article.images || [])].sort((a, b) => (b.width || 0) - (a.width || 0))[0]?.url || "";
-  return normalizeNewsItem(
-    {
-      id: article.id || article.nowId || url,
-      title: article.headline || article.title || "",
-      description: article.description || "",
-      source: source.name,
-      sourceUrl: source.url,
-      url,
-      imageUrl: image,
-      publishedAt: article.published || article.lastModified || "",
-      sport,
-      tags: [sport, ...(article.categories || []).map((category) => category.description || category.type || "")],
-    },
-    source
-  );
-};
-
-const parseEspnApiNews = (payload: unknown, source: NewsSource, sport: string) => {
-  const data = payload as { articles?: EspnApiArticle[]; headlines?: EspnApiArticle[]; news?: EspnApiArticle[] };
-  const rows = Array.isArray(data.articles)
-    ? data.articles
-    : Array.isArray(data.headlines)
-      ? data.headlines
-      : Array.isArray(data.news)
-        ? data.news
-        : [];
-
-  return rows
-    .map((article) => normalizeEspnApiArticle(article, source, sport))
-    .filter((item: NewsItem | null): item is NewsItem => Boolean(item));
-};
-
-const fetchEspnApiNews = async (source: NewsSource, sport: string, dev = false) => {
-  if (!isEspnSource(source)) return [];
-  const batches = await Promise.allSettled(
-    espnApiUrls(sport, dev).map(async (url) => {
-      const res = await fetch(url, {
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-      });
-      if (!res.ok) throw new Error(`ESPN API HTTP ${res.status}`);
-      return parseEspnApiNews(await res.json(), source, sport);
-    })
-  );
-  return sortNewsByDate(removeDuplicateNews(batches.flatMap((batch) => (batch.status === "fulfilled" ? batch.value : []))));
-};
-
 const sourceKey = (source: NewsSource) => `${source.name}:${source.url}`.toLowerCase();
 
 export const readNewsSources = (): NewsSource[] => {
@@ -440,15 +360,9 @@ export const normalizeNewsItem = (raw: RawNewsItem, fallbackSource?: NewsSource)
 export const removeDuplicateNews = (items: NewsItem[]) => {
   const seen = new Set<string>();
   return items.filter((item) => {
-    const titleKey = cleanNewsText(item.title)
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^\w]+/g, " ")
-      .trim();
-    const keys = [item.url, `${titleKey}:${cleanNewsText(item.source).toLowerCase()}`].filter(Boolean);
-    if (keys.some((key) => seen.has(key))) return false;
-    keys.forEach((key) => seen.add(key));
+    const key = item.url || `${item.title}:${item.source}`.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 };
@@ -492,7 +406,7 @@ const fetchDevDirectSiteNews = async (source: NewsSource, sport: string) => {
     headers: { Accept: "text/html,application/xhtml+xml" },
   });
   if (!res.ok) throw new Error(`Site HTTP ${res.status}`);
-  return parseKnownSourceLatest(await res.text(), source, sport, getKnownSourceFetchUrl(source, sport, false));
+  return parseKnownSourceLatest(await res.text(), source, sport, url);
 };
 
 const fetchDevGoogleSiteNews = async (source: NewsSource, terms: string[], sport: string) => {
@@ -512,7 +426,6 @@ const fetchDevGoogleSiteNews = async (source: NewsSource, terms: string[], sport
 
 const fetchDevSiteNews = async (source: NewsSource, terms: string[], sport: string) => {
   const batches = await Promise.allSettled([
-    fetchEspnApiNews(source, sport, true),
     fetchDevDirectSiteNews(source, sport),
     fetchDevGoogleSiteNews(source, terms, sport),
   ]);
@@ -543,11 +456,6 @@ export const fetchNewsFromSources = async ({ sources, terms = [], sport = "footb
     const normalized = rawItems
       .map((item: RawNewsItem) => normalizeNewsItem(item))
       .filter((item: NewsItem | null): item is NewsItem => Boolean(item));
-
-    if (import.meta.env.DEV) {
-      const localItems = await fetchNewsFromSourcesDevFallback({ sources: activeSources, terms, sport }).catch(() => []);
-      return sortNewsByDate(removeDuplicateNews([...localItems, ...normalized]));
-    }
 
     return sortNewsByDate(removeDuplicateNews(normalized));
   } catch (error) {

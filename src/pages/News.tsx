@@ -260,7 +260,7 @@ const News = () => {
             Noticias
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Noticias recentes para {sportLabel.toLowerCase()} e do esporte em geral.
+            Noticias recentes para {sportLabel.toLowerCase()}.
             {lastUpdatedAt && (
               <span className="block sm:inline sm:ml-2">
                 Ultima atualizacao: {formatTime(lastUpdatedAt)}.
