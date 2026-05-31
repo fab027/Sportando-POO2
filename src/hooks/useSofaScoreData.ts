@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   sofaScoreService,
   SofaTeamStanding,
@@ -118,15 +118,8 @@ export function useMatches(leagueUrl: string) {
 export function useLiveMatches(pollIntervalMs = 30_000) {
   const [data, setData] = useState<SofaLiveMatch[]>([]);
   const [status, setStatus] = useState<Status>("idle");
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
-  const [lastFailedAt, setLastFailedAt] = useState<number | null>(null);
-  const inFlightRef = useRef(false);
-  const requestVersionRef = useRef(0);
 
   const fetchData = useCallback(async (options?: FetchOptions) => {
-    if (inFlightRef.current) return false;
-    const requestVersion = ++requestVersionRef.current;
-    inFlightRef.current = true;
     setStatus("loading");
     try {
       const key = "live_v10_all";
@@ -138,49 +131,22 @@ export function useLiveMatches(pollIntervalMs = 30_000) {
         res = await sofaScoreService.getLiveMatches();
         cache[key] = { data: res, ts: Date.now() };
       }
-      if (requestVersion !== requestVersionRef.current) return false;
       setData(Array.isArray(res) ? res : []);
-      setLastUpdatedAt(Date.now());
-      setLastFailedAt(null);
       setStatus("success");
-      return true;
     } catch {
-      if (requestVersion === requestVersionRef.current) {
-        setLastFailedAt(Date.now());
-        setStatus("error");
-      }
-      return false;
-    } finally {
-      if (requestVersion === requestVersionRef.current) inFlightRef.current = false;
+      setData([]);
+      setStatus("error");
     }
   }, []);
 
   useEffect(() => {
-    let stopped = false;
-    let timeoutId: number | null = null;
-
-    const scheduleNext = () => {
-      if (stopped || pollIntervalMs <= 0) return;
-      timeoutId = window.setTimeout(() => {
-        void run(true);
-      }, pollIntervalMs);
-    };
-
-    const run = async (force = false) => {
-      await fetchData({ force });
-      scheduleNext();
-    };
-
-    void run(false);
-    return () => {
-      stopped = true;
-      requestVersionRef.current += 1;
-      inFlightRef.current = false;
-      if (timeoutId) window.clearTimeout(timeoutId);
-    };
+    void fetchData();
+    if (pollIntervalMs <= 0) return undefined;
+    const interval = window.setInterval(() => void fetchData(), pollIntervalMs);
+    return () => clearInterval(interval);
   }, [fetchData, pollIntervalMs]);
 
-  return { data, status, lastUpdatedAt, lastFailedAt, refetch: fetchData };
+  return { data, status, refetch: fetchData };
 }
 
 // ─── Today Matches ───────────────────────────────────────────────────────────

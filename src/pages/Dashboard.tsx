@@ -28,19 +28,9 @@ import { useFavorites } from "@/contexts/FavoritesContext";
 
 const LIVE_COUNTRIES_STORAGE_KEY = "sportando.dashboard.liveCountries";
 const TODAY_COUNTRIES_STORAGE_KEY = "sportando.dashboard.todayCountries";
-const TODAY_TIME_FILTER_STORAGE_KEY = "sportando.dashboard.todayTimeFilter";
 const LIVE_ALERTS_STORAGE_KEY = "sportando.dashboard.liveAlerts.v1";
 const LIVE_REFRESH_INTERVAL_STORAGE_KEY = "sportando.dashboard.liveRefreshIntervalMs";
 const LIVE_MATCHES_PREVIEW_LIMIT = 8;
-const TODAY_TIME_FILTER_OPTIONS = [
-  { value: "all", label: "Todo o dia" },
-  { value: "last_3", label: "Ultimas 3h" },
-  { value: "last_6", label: "Ultimas 6h" },
-  { value: "last_12", label: "Ultimas 12h" },
-  { value: "last_24", label: "Ultimas 24h" },
-  { value: "next_6", label: "Proximas 6h" },
-  { value: "next_12", label: "Proximas 12h" },
-] as const;
 const LIVE_REFRESH_INTERVAL_OPTIONS = [
   { value: 0, label: "Manual" },
   { value: 30_000, label: "30s" },
@@ -53,7 +43,6 @@ type TeamSide = "home" | "away";
 type AlertSide = TeamSide | "both";
 type LiveAlertEvent = "start" | "halftime" | "goal" | "finish" | "favoritePlayerGoal" | "leadChange";
 type AlertTone = "positive" | "negative" | "neutral";
-type TodayTimeFilter = (typeof TODAY_TIME_FILTER_OPTIONS)[number]["value"];
 
 type LiveAlertEvents = Record<LiveAlertEvent, boolean>;
 
@@ -142,12 +131,6 @@ const readLiveRefreshInterval = () => {
   return LIVE_REFRESH_INTERVAL_OPTIONS.some((option) => option.value === parsed) ? parsed : 60_000;
 };
 
-const readTodayTimeFilter = (): TodayTimeFilter => {
-  if (typeof window === "undefined") return "all";
-  const raw = localStorage.getItem(TODAY_TIME_FILTER_STORAGE_KEY);
-  return TODAY_TIME_FILTER_OPTIONS.some((option) => option.value === raw) ? (raw as TodayTimeFilter) : "all";
-};
-
 const normalizeName = (value: string) =>
   value
     .toLowerCase()
@@ -214,8 +197,8 @@ const formatDateTime = (ts: number) =>
     minute: "2-digit",
   });
 
-const formatRefreshClock = (value: number | Date = Date.now()) =>
-  new Date(value).toLocaleTimeString("pt-BR", {
+const formatRefreshClock = () =>
+  new Date().toLocaleTimeString("pt-BR", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -266,39 +249,6 @@ const countrySelectionLabel = (countries: string[]) => {
   if (countries.length === 0) return "Todos os paises";
   if (countries.length === 1) return countries[0];
   return `${countries.length} paises`;
-};
-
-const todayTimeFilterLabel = (value: TodayTimeFilter) =>
-  TODAY_TIME_FILTER_OPTIONS.find((option) => option.value === value)?.label || "Todo o dia";
-
-const todayMatchStartMs = (match: TodayMatch) => {
-  if (typeof match.startTimestamp === "number" && match.startTimestamp > 0) {
-    return match.startTimestamp * 1000;
-  }
-
-  const timeMatch = String(match.time || "").match(/^(\d{1,2}):(\d{2})$/);
-  if (timeMatch) {
-    const date = new Date();
-    date.setHours(Number(timeMatch[1]), Number(timeMatch[2]), 0, 0);
-    return date.getTime();
-  }
-
-  if (formatStatus(match.status) === "Ao vivo") return Date.now();
-  return null;
-};
-
-const matchPassesTodayTimeFilter = (match: TodayMatch, filter: TodayTimeFilter) => {
-  if (filter === "all") return true;
-  const startMs = todayMatchStartMs(match);
-  if (!startMs) return false;
-
-  const now = Date.now();
-  const [direction, hoursText] = filter.split("_");
-  const hoursMs = Number(hoursText) * 60 * 60 * 1000;
-
-  if (direction === "last") return startMs <= now && startMs >= now - hoursMs;
-  if (direction === "next") return startMs >= now && startMs <= now + hoursMs;
-  return true;
 };
 
 const Card = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => (
@@ -741,7 +691,6 @@ const Dashboard = () => {
   });
   const [showAllLiveMatches, setShowAllLiveMatches] = useState(false);
   const [showOnlyAlertedLiveMatches, setShowOnlyAlertedLiveMatches] = useState(false);
-  const [todayTimeFilter, setTodayTimeFilter] = useState<TodayTimeFilter>(readTodayTimeFilter);
   const [liveRefreshIntervalMs, setLiveRefreshIntervalMs] = useState(readLiveRefreshInterval);
   const [isRefreshingAll, setIsRefreshingAll] = useState(false);
   const [isRefreshingLive, setIsRefreshingLive] = useState(false);
@@ -754,13 +703,7 @@ const Dashboard = () => {
 
   const { lastMatches, nextMatches, status: matchesStatus, refetch: refetchMatches } = useMatches(league.sofascoreUrl);
   const { data: todayMatches, status: todayStatus, refetch: refetchToday } = useTodayMatches();
-  const {
-    data: liveMatches,
-    status: liveStatus,
-    lastUpdatedAt: liveLastUpdatedAt,
-    lastFailedAt: liveLastFailedAt,
-    refetch: refetchLive,
-  } = useLiveMatches(liveRefreshIntervalMs);
+  const { data: liveMatches, status: liveStatus, refetch: refetchLive } = useLiveMatches(liveRefreshIntervalMs);
   const { data: topScorers, status: scorersStatus, refetch: refetchScorers } = useTopPlayers(league.sofascoreUrl, "goals");
   const { data: topAssists, status: assistsStatus, refetch: refetchAssists } = useTopPlayers(league.sofascoreUrl, "assists");
 
@@ -788,10 +731,6 @@ const Dashboard = () => {
   useEffect(() => {
     localStorage.setItem(TODAY_COUNTRIES_STORAGE_KEY, JSON.stringify(selectedTodayCountries));
   }, [selectedTodayCountries]);
-
-  useEffect(() => {
-    localStorage.setItem(TODAY_TIME_FILTER_STORAGE_KEY, todayTimeFilter);
-  }, [todayTimeFilter]);
 
   useEffect(() => {
     localStorage.setItem(LIVE_ALERTS_STORAGE_KEY, JSON.stringify(liveAlertSettings));
@@ -1137,15 +1076,10 @@ const Dashboard = () => {
     [selectedTodayCountries, todayMatches]
   );
 
-  const countryFilteredTodayMatches = useMemo(() => {
+  const selectedTodayMatches = useMemo(() => {
     if (selectedTodayCountries.length === 0) return todayMatches;
     return todayMatches.filter((match) => selectedTodayCountries.includes(match.country || "Outros"));
   }, [selectedTodayCountries, todayMatches]);
-
-  const selectedTodayMatches = useMemo(
-    () => countryFilteredTodayMatches.filter((match) => matchPassesTodayTimeFilter(match, todayTimeFilter)),
-    [countryFilteredTodayMatches, todayTimeFilter]
-  );
 
   const todayTournaments = useMemo(
     () => Array.from(new Set(selectedTodayMatches.map((match) => match.tournament))).length,
@@ -1174,13 +1108,6 @@ const Dashboard = () => {
 
   const liveCountryLabel = countrySelectionLabel(selectedLiveCountries);
   const todayCountryLabel = countrySelectionLabel(selectedTodayCountries);
-  const liveAutoStatus = liveLastFailedAt
-    ? `Falha ao atualizar ao vivo as ${formatRefreshClock(liveLastFailedAt)}`
-    : liveLastUpdatedAt
-      ? `Ao vivo atualizado as ${formatRefreshClock(liveLastUpdatedAt)}`
-      : null;
-  const liveNoticeText = liveRefreshNotice || liveAutoStatus;
-  const liveNoticeFailed = Boolean(liveNoticeText?.startsWith("Falha"));
 
   const isLoading = matchesStatus === "loading" || todayStatus === "loading";
   const isOffline = matchesStatus === "error" || todayStatus === "error";
@@ -1206,12 +1133,8 @@ const Dashboard = () => {
     if (isRefreshingLive) return;
     setIsRefreshingLive(true);
     setLiveRefreshNotice(null);
-    const updated = await refetchLive({ force: true });
-    setLiveRefreshNotice(
-      updated
-        ? `Ao vivo atualizado as ${formatRefreshClock()}`
-        : `Falha ao atualizar ao vivo as ${formatRefreshClock()}`
-    );
+    await refetchLive({ force: true });
+    setLiveRefreshNotice(`Ao vivo atualizado as ${formatRefreshClock()}`);
     setIsRefreshingLive(false);
   };
 
@@ -1287,25 +1210,21 @@ const Dashboard = () => {
                     </p>
                   </div>
                   <div className="space-y-1.5">
-                    <p className="text-xs font-semibold text-foreground">
+                    <label htmlFor="live-refresh-interval" className="text-xs font-semibold text-foreground">
                       Atualizacao automatica
-                    </p>
-                    <div className="grid grid-cols-2 gap-1.5">
+                    </label>
+                    <select
+                      id="live-refresh-interval"
+                      value={liveRefreshIntervalMs}
+                      onChange={(event) => setLiveRefreshIntervalMs(Number(event.target.value))}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground outline-none transition-colors focus:border-sport"
+                    >
                       {LIVE_REFRESH_INTERVAL_OPTIONS.map((option) => (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => setLiveRefreshIntervalMs(option.value)}
-                          className={`rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
-                            liveRefreshIntervalMs === option.value
-                              ? "border-sport bg-sport/15 text-sport"
-                              : "border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground"
-                          }`}
-                        >
+                        <option key={option.value} value={option.value}>
                           {option.label}
-                        </button>
+                        </option>
                       ))}
-                    </div>
+                    </select>
                   </div>
                   <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background p-3 text-sm text-foreground">
                     <input
@@ -1337,10 +1256,10 @@ const Dashboard = () => {
             </button>
           </div>
         </div>
-        {liveNoticeText && (
-          <p className={`mb-2 flex items-center gap-1.5 text-xs ${liveNoticeFailed ? "text-destructive" : "text-sport"}`}>
-            {liveNoticeFailed ? <WifiOff className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
-            {liveNoticeText}
+        {liveRefreshNotice && (
+          <p className="mb-2 flex items-center gap-1.5 text-xs text-sport">
+            <Check className="h-3.5 w-3.5" />
+            {liveRefreshNotice}
             <span className="text-muted-foreground">Auto: {intervalLabel(liveRefreshIntervalMs)}</span>
           </p>
         )}
@@ -1410,59 +1329,21 @@ const Dashboard = () => {
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">Recorte global de jogos monitorados</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-            <Popover>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  className="flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
-                  aria-label="Filtrar partidas por horario"
-                >
-                  <Clock3 className="h-3.5 w-3.5 text-sport" />
-                  {todayTimeFilterLabel(todayTimeFilter)}
-                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-52">
-                <div className="space-y-1">
-                  {TODAY_TIME_FILTER_OPTIONS.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => setTodayTimeFilter(option.value)}
-                      className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-xs font-medium transition-colors ${
-                        todayTimeFilter === option.value
-                          ? "bg-sport/15 text-sport"
-                          : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                      }`}
-                    >
-                      {option.label}
-                      {todayTimeFilter === option.value && <Check className="h-3.5 w-3.5" />}
-                    </button>
-                  ))}
-                </div>
-              </PopoverContent>
-            </Popover>
-            <CountrySelector
-              label={todayCountryLabel}
-              options={todayCountryOptions}
-              selectedCountries={selectedTodayCountries}
-              onClear={() => setSelectedTodayCountries([])}
-              onToggle={toggleTodayCountry}
-              emptyMessage="Sem paises com partidas hoje."
-            />
-          </div>
+          <CountrySelector
+            label={todayCountryLabel}
+            options={todayCountryOptions}
+            selectedCountries={selectedTodayCountries}
+            onClear={() => setSelectedTodayCountries([])}
+            onToggle={toggleTodayCountry}
+            emptyMessage="Sem paises com partidas hoje."
+          />
         </div>
         {todayStatus === "loading" && todayMatches.length === 0 ? (
           <p className="text-sm text-muted-foreground">Buscando jogos de hoje...</p>
         ) : todayMatches.length === 0 ? (
           <p className="text-sm text-muted-foreground">Nenhuma partida encontrada para hoje.</p>
-        ) : countryFilteredTodayMatches.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nenhuma partida encontrada para os paises selecionados.</p>
         ) : selectedTodayMatches.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            Nenhuma partida encontrada no filtro de tempo "{todayTimeFilterLabel(todayTimeFilter)}".
-          </p>
+          <p className="text-sm text-muted-foreground">Nenhuma partida encontrada para os paises selecionados.</p>
         ) : (
           <div className="grid gap-2 lg:grid-cols-2">
             {selectedTodayMatches.slice(0, 16).map((match) => (

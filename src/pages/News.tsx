@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Check, ExternalLink, Globe2, Plus, RefreshCw, Rss, Search, Trash2, WifiOff } from "lucide-react";
+import { AlertCircle, ExternalLink, Globe2, Plus, RefreshCw, Rss, Search, Trash2, WifiOff } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useFavorites } from "@/contexts/FavoritesContext";
 import { useSport } from "@/contexts/SportContext";
@@ -24,7 +24,6 @@ type SourceForm = {
 type Status = "idle" | "loading" | "success" | "error";
 
 const NEWS_REFRESH_INTERVAL_STORAGE_KEY = "sportando.news.refreshIntervalMs";
-const NEWS_UPDATE_TIMEOUT_MS = 20_000;
 const NEWS_REFRESH_INTERVAL_OPTIONS = [
   { value: 0, label: "Manual" },
   { value: 60_000, label: "1 min" },
@@ -70,22 +69,6 @@ const formatTime = (value: number) =>
     minute: "2-digit",
     second: "2-digit",
   });
-
-const refreshIntervalLabel = (value: number) =>
-  NEWS_REFRESH_INTERVAL_OPTIONS.find((option) => option.value === value)?.label || "Manual";
-
-const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, message: string) => {
-  let timeoutId: number | null = null;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    if (timeoutId) window.clearTimeout(timeoutId);
-  }
-};
 
 const readNewsRefreshInterval = () => {
   if (typeof window === "undefined") return 60_000;
@@ -153,9 +136,6 @@ const News = () => {
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(readNewsRefreshInterval);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
-  const [lastAutoUpdatedAt, setLastAutoUpdatedAt] = useState<number | null>(null);
-  const [isAutoRefreshing, setIsAutoRefreshing] = useState(false);
-  const updateInFlightRef = useRef(false);
   const observerTermsRef = useRef<string[]>([]);
 
   const favoriteTerms = useMemo(() => favorites.map((favorite) => favorite.nome).filter(Boolean), [favorites]);
@@ -168,8 +148,6 @@ const News = () => {
 
   const updateNews = useCallback(
     async (silent = false) => {
-      if (updateInFlightRef.current) return;
-
       if (enabledSources.length === 0) {
         setItems([]);
         setError("Ative pelo menos uma fonte para buscar noticias.");
@@ -177,25 +155,17 @@ const News = () => {
         return;
       }
 
-      updateInFlightRef.current = true;
       if (!silent) setStatus("loading");
-      if (silent) setIsAutoRefreshing(true);
       setError(null);
 
       try {
-        const news = await withTimeout(
-          refreshNews({
-            sources,
-            terms: observerTermsRef.current,
-            sport,
-          }),
-          NEWS_UPDATE_TIMEOUT_MS,
-          "Tempo limite ao atualizar noticias."
-        );
-        const now = Date.now();
+        const news = await refreshNews({
+          sources,
+          terms: observerTermsRef.current,
+          sport,
+        });
         setItems(news);
-        setLastUpdatedAt(now);
-        if (silent) setLastAutoUpdatedAt(now);
+        setLastUpdatedAt(Date.now());
         setStatus("success");
       } catch (err) {
         setStatus("error");
@@ -205,9 +175,6 @@ const News = () => {
             ? "O servico de noticias nao respondeu. Em ambiente local, reinicie o servidor; em producao, faca deploy da funcao news-observer."
             : message || "Nao foi possivel atualizar as noticias agora."
         );
-      } finally {
-        updateInFlightRef.current = false;
-        if (silent) setIsAutoRefreshing(false);
       }
     },
     [enabledSources.length, sources, sport]
@@ -227,22 +194,8 @@ const News = () => {
 
   useEffect(() => {
     if (refreshIntervalMs <= 0) return undefined;
-    let stopped = false;
-    let timeoutId: number | null = null;
-
-    const scheduleNext = () => {
-      if (stopped) return;
-      timeoutId = window.setTimeout(async () => {
-        await updateNews(true);
-        scheduleNext();
-      }, refreshIntervalMs);
-    };
-
-    scheduleNext();
-    return () => {
-      stopped = true;
-      if (timeoutId) window.clearTimeout(timeoutId);
-    };
+    const interval = window.setInterval(() => void updateNews(true), refreshIntervalMs);
+    return () => window.clearInterval(interval);
   }, [refreshIntervalMs, updateNews]);
 
   const selectedSourceConfig = useMemo(
@@ -296,7 +249,7 @@ const News = () => {
   };
 
   const isInitialLoading = status === "loading" && items.length === 0;
-  const isRefreshing = status === "loading" || isAutoRefreshing;
+  const isRefreshing = status === "loading";
 
   return (
     <div className="space-y-6">
@@ -313,14 +266,6 @@ const News = () => {
                 Ultima atualizacao: {formatTime(lastUpdatedAt)}.
               </span>
             )}
-            <span className="block sm:inline sm:ml-2">
-              Auto: {refreshIntervalLabel(refreshIntervalMs)}
-              {isAutoRefreshing
-                ? " (atualizando...)"
-                : lastAutoUpdatedAt
-                  ? ` - ultima auto: ${formatTime(lastAutoUpdatedAt)}`
-                  : ""}.
-            </span>
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -347,21 +292,6 @@ const News = () => {
           </button>
         </div>
       </div>
-
-      {(isAutoRefreshing || lastAutoUpdatedAt) && (
-        <div className="flex items-center gap-2 rounded-xl border border-sport/20 bg-sport/5 px-4 py-2 text-xs text-muted-foreground">
-          {isAutoRefreshing ? (
-            <RefreshCw className="h-3.5 w-3.5 animate-spin text-sport" />
-          ) : (
-            <Check className="h-3.5 w-3.5 text-sport" />
-          )}
-          <span>
-            {isAutoRefreshing
-              ? "Atualizacao automatica de noticias em andamento..."
-              : `Noticias atualizadas automaticamente as ${formatTime(lastAutoUpdatedAt || Date.now())}.`}
-          </span>
-        </div>
-      )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-4">
