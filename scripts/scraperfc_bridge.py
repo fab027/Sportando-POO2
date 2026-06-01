@@ -38,9 +38,12 @@ else:
 API_PREFIX = "https://api.sofascore.com/api/v1"
 DEFAULT_PORT = 8787
 CACHE_TTL_SECONDS = 120
+SEASON_EVENTS_PAGE_LIMIT = 20
+SEASON_ROUND_BATCH_SIZE = 6
 _CACHE: dict[str, tuple[float, Any]] = {}
 _SCRAPER = None
 _SOFA_LOCK = Lock()
+_CURRENT_SEASON_ID_CACHE: dict[int, int] = {}
 
 
 def _scraper():
@@ -171,11 +174,85 @@ def unique_tournament_id_from_url(league_url: str) -> int:
 
 
 def get_current_season_id(tournament_id: int) -> int:
+    if tournament_id in _CURRENT_SEASON_ID_CACHE:
+        return _CURRENT_SEASON_ID_CACHE[tournament_id]
+
     data = sofa_json(f"/unique-tournament/{tournament_id}/seasons")
     seasons = data.get("seasons") if isinstance(data, dict) else []
     if not seasons:
         raise ValueError(f"Temporada nao encontrada para torneio {tournament_id}")
-    return int(seasons[0]["id"])
+    season_id = int(seasons[0]["id"])
+    _CURRENT_SEASON_ID_CACHE[tournament_id] = season_id
+    return season_id
+
+
+def collect_round_numbers(value: Any, rounds: set[int] | None = None) -> set[int]:
+    if rounds is None:
+        rounds = set()
+    if isinstance(value, list):
+        for item in value:
+            collect_round_numbers(item, rounds)
+    elif isinstance(value, dict):
+        if isinstance(value.get("round"), int):
+            rounds.add(value["round"])
+        for item in value.values():
+            collect_round_numbers(item, rounds)
+    return rounds
+
+
+def season_round_numbers(tournament_id: int, season_id: int) -> list[int]:
+    data = sofa_json(f"/unique-tournament/{tournament_id}/season/{season_id}/rounds")
+    return sorted(collect_round_numbers(data))
+
+
+def season_events_by_rounds(tournament_id: int, season_id: int) -> list[dict[str, Any]]:
+    rounds = season_round_numbers(tournament_id, season_id)
+    if not rounds:
+        raise ValueError("Rodadas da temporada nao encontradas")
+
+    events_by_id: dict[int, dict[str, Any]] = {}
+    for round_number in rounds:
+        try:
+            data = sofa_json(f"/unique-tournament/{tournament_id}/season/{season_id}/events/round/{round_number}")
+        except Exception:
+            continue
+        for event in data.get("events") or []:
+            event_id = event.get("id") if isinstance(event, dict) else None
+            if isinstance(event_id, int):
+                events_by_id[event_id] = event
+
+    if not events_by_id:
+        raise ValueError("Eventos por rodada nao encontrados")
+    return list(events_by_id.values())
+
+
+def paged_season_events(tournament_id: int, season_id: int, endpoint: str) -> list[dict[str, Any]]:
+    events_by_id: dict[int, dict[str, Any]] = {}
+    for page in range(SEASON_EVENTS_PAGE_LIMIT):
+        data = sofa_json(f"/unique-tournament/{tournament_id}/season/{season_id}/events/{endpoint}/{page}")
+        events = data.get("events") if isinstance(data, dict) else []
+        if not events:
+            break
+        for event in events:
+            event_id = event.get("id") if isinstance(event, dict) else None
+            if isinstance(event_id, int):
+                events_by_id[event_id] = event
+    return list(events_by_id.values())
+
+
+def season_events(tournament_id: int, season_id: int, endpoint: str | None = None) -> list[dict[str, Any]]:
+    try:
+        return season_events_by_rounds(tournament_id, season_id)
+    except Exception:
+        if endpoint:
+            return paged_season_events(tournament_id, season_id, endpoint)
+
+        events_by_id: dict[int, dict[str, Any]] = {}
+        for event in [*paged_season_events(tournament_id, season_id, "last"), *paged_season_events(tournament_id, season_id, "next")]:
+            event_id = event.get("id") if isinstance(event, dict) else None
+            if isinstance(event_id, int):
+                events_by_id[event_id] = event
+        return list(events_by_id.values())
 
 
 def team_image_url(team_id: Any) -> str | None:
@@ -197,6 +274,30 @@ def normalize_status(event: dict[str, Any]) -> str:
     return event.get("status", {}).get("description") or "Scheduled"
 
 
+def score_number(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def score_pair(home_score: dict[str, Any], away_score: dict[str, Any]) -> dict[str, int | None]:
+    home_penalty_score = score_number(home_score.get("penalties"))
+    away_penalty_score = score_number(away_score.get("penalties"))
+    main_keys = ["afterExtraTime", "normaltime", "current"]
+
+    def pick_main(score: dict[str, Any]) -> int | None:
+        for key in main_keys:
+            value = score_number(score.get(key))
+            if value is not None:
+                return value
+        return None
+
+    return {
+        "homeScore": pick_main(home_score),
+        "awayScore": pick_main(away_score),
+        "homePenaltyScore": home_penalty_score,
+        "awayPenaltyScore": away_penalty_score,
+    }
+
+
 def map_event(event: dict[str, Any]) -> dict[str, Any]:
     home = event.get("homeTeam") or {}
     away = event.get("awayTeam") or {}
@@ -207,6 +308,7 @@ def map_event(event: dict[str, Any]) -> dict[str, Any]:
     city = venue.get("city") or {}
     home_score = event.get("homeScore") or {}
     away_score = event.get("awayScore") or {}
+    scores = score_pair(home_score, away_score)
     round_info = event.get("roundInfo") or {}
 
     return {
@@ -217,8 +319,10 @@ def map_event(event: dict[str, Any]) -> dict[str, Any]:
         "awayTeam": away.get("name") or away.get("shortName") or "Unknown",
         "homeTeamImageUrl": team_image_url(home.get("id")),
         "awayTeamImageUrl": team_image_url(away.get("id")),
-        "homeScore": home_score.get("current") if isinstance(home_score.get("current"), int) else None,
-        "awayScore": away_score.get("current") if isinstance(away_score.get("current"), int) else None,
+        "homeScore": scores["homeScore"],
+        "awayScore": scores["awayScore"],
+        "homePenaltyScore": scores["homePenaltyScore"],
+        "awayPenaltyScore": scores["awayPenaltyScore"],
         "status": normalize_status(event),
         "startTimestamp": event.get("startTimestamp") or 0,
         "tournament": unique.get("name") or tournament.get("name") or "Desconhecido",
@@ -453,12 +557,11 @@ def handle_action(body: dict[str, Any]) -> Any:
             ],
         }
 
-    if action in {"matches_last", "matches_next"}:
+    if action in {"matches_season", "matches_last", "matches_next"}:
         tournament_id = unique_tournament_id_from_url(str(body.get("leagueUrl") or ""))
         season_id = get_current_season_id(tournament_id)
-        endpoint = "last" if action == "matches_last" else "next"
-        data = sofa_json(f"/unique-tournament/{tournament_id}/season/{season_id}/events/{endpoint}/0")
-        events = [map_event(event) for event in data.get("events") or []]
+        endpoint = "last" if action == "matches_last" else "next" if action == "matches_next" else None
+        events = [map_event(event) for event in season_events(tournament_id, season_id, endpoint)]
         return sorted(events, key=lambda item: item["startTimestamp"], reverse=endpoint == "last")
 
     if action == "live":
@@ -466,8 +569,8 @@ def handle_action(body: dict[str, Any]) -> Any:
         return [
             {
                 **map_event(event),
-                "homeScore": (event.get("homeScore") or {}).get("current") or 0,
-                "awayScore": (event.get("awayScore") or {}).get("current") or 0,
+                "homeScore": score_pair(event.get("homeScore") or {}, event.get("awayScore") or {})["homeScore"] or 0,
+                "awayScore": score_pair(event.get("homeScore") or {}, event.get("awayScore") or {})["awayScore"] or 0,
                 "status": "Live",
                 "minute": None,
                 "period": (event.get("status") or {}).get("description"),

@@ -6,7 +6,6 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
-  Clock3,
   Goal,
   Globe2,
   Handshake,
@@ -229,6 +228,32 @@ const formatRound = (match: SofaMatch) => {
 const hasMatchScore = (match: Pick<SofaMatch | TodayMatch | SofaLiveMatch, "homeScore" | "awayScore">) =>
   typeof match.homeScore === "number" && typeof match.awayScore === "number";
 
+const lastFullyCompletedRound = (matches: SofaMatch[]) => {
+  const fallback = matches
+    .filter(isFinished)
+    .sort((a, b) => b.startTimestamp - a.startTimestamp)
+    .slice(0, 8);
+
+  const byRound = new Map<number, SofaMatch[]>();
+  matches.forEach((match) => {
+    if (typeof match.roundInfo !== "number") return;
+    const roundMatches = byRound.get(match.roundInfo) || [];
+    roundMatches.push(match);
+    byRound.set(match.roundInfo, roundMatches);
+  });
+
+  if (byRound.size === 0) return fallback;
+
+  const expectedMatches = Math.max(...Array.from(byRound.values()).map((roundMatches) => roundMatches.length));
+  const completedRound = Array.from(byRound.entries())
+    .filter(([, roundMatches]) => roundMatches.length >= expectedMatches && roundMatches.every(isFinished))
+    .sort(([roundA], [roundB]) => roundB - roundA)[0];
+
+  return completedRound
+    ? [...completedRound[1]].sort((a, b) => a.startTimestamp - b.startTimestamp)
+    : fallback;
+};
+
 const normalizeClockPart = (value?: string | null) => {
   const text = String(value || "").trim();
   if (!text || /^(started|live|in progress|ao vivo)$/i.test(text)) return null;
@@ -253,26 +278,6 @@ const countrySelectionLabel = (countries: string[]) => {
 
 const Card = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => (
   <section className={`rounded-xl border border-border bg-card ${className}`}>{children}</section>
-);
-
-const SectionHeader = ({
-  icon: Icon,
-  title,
-  subtitle,
-}: {
-  icon: typeof Trophy;
-  title: string;
-  subtitle?: string;
-}) => (
-  <div className="mb-3 flex items-start justify-between gap-3">
-    <div>
-      <h2 className="flex items-center gap-2 font-display text-sm font-bold text-foreground">
-        <Icon className="h-4 w-4 text-sport" />
-        {title}
-      </h2>
-      {subtitle && <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p>}
-    </div>
-  </div>
 );
 
 const CountrySelector = ({
@@ -1087,12 +1092,12 @@ const Dashboard = () => {
   );
 
   const lastCompletedRound = useMemo(() => {
-    const finished = lastMatches.filter(isFinished).sort((a, b) => b.startTimestamp - a.startTimestamp);
-    const anchor = finished[0];
-    if (!anchor) return [];
-    if (!anchor.roundInfo) return finished.slice(0, 8);
-    return finished.filter((match) => match.roundInfo === anchor.roundInfo).slice(0, 12);
-  }, [lastMatches]);
+    return lastFullyCompletedRound([...lastMatches, ...nextMatches]);
+  }, [lastMatches, nextMatches]);
+
+  const lastCompletedRoundTitle = lastCompletedRound[0]?.roundInfo
+    ? `Ultima rodada finalizada - Rodada ${lastCompletedRound[0].roundInfo}`
+    : "Ultima rodada finalizada";
 
   const toggleLiveCountry = (country: string) => {
     setSelectedLiveCountries((current) =>
@@ -1165,7 +1170,7 @@ const Dashboard = () => {
               </>
             ) : (
               <>
-                <Wifi className="h-3.5 w-3.5 text-sport" /> Jogos atualizados via SofaScore
+                <Wifi className="h-3.5 w-3.5 text-sport" /> Dados atualizados via SofaScore
               </>
             )}
           </p>
@@ -1353,23 +1358,6 @@ const Dashboard = () => {
         )}
       </Card>
 
-      <Card className="p-4">
-        <SectionHeader
-          icon={Clock3}
-          title={`Proximas partidas - ${league.name}`}
-          subtitle="Agenda do campeonato selecionado"
-        />
-        {nextMatches.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nenhuma partida futura encontrada para este campeonato.</p>
-        ) : (
-          <div className="grid gap-2 xl:grid-cols-2">
-            {nextMatches.slice(0, 12).map((match) => (
-              <MatchRow key={match.id} match={match} />
-            ))}
-          </div>
-        )}
-      </Card>
-
       <div className="grid items-start gap-4 lg:grid-cols-2">
         <PlayerRanking
           title="Artilheiros"
@@ -1407,15 +1395,15 @@ const Dashboard = () => {
 
         <CollapsibleCard
           icon={Shield}
-          title="Ultimas partidas finalizadas"
-          subtitle={`Recorte recente de ${league.name}`}
+          title={lastCompletedRoundTitle}
+          subtitle={`Rodada completamente jogada em ${league.name}`}
           defaultOpen={false}
         >
           {lastCompletedRound.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhuma partida finalizada encontrada.</p>
+            <p className="text-sm text-muted-foreground">Nenhuma rodada completamente finalizada encontrada.</p>
           ) : (
             <div className="space-y-2">
-              {lastCompletedRound.slice(0, 8).map((match) => (
+              {lastCompletedRound.map((match) => (
                 <MatchRow key={match.id} match={match} showScore />
               ))}
             </div>

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, BellRing, Search, RefreshCw, Wifi, WifiOff } from "lucide-react";
+import { Activity, Bell, BellRing, ExternalLink, Search, RefreshCw, Users, Wifi, WifiOff } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSport } from "@/contexts/SportContext";
 import { useMatches, useTodayMatches, useLiveMatches } from "@/hooks/useSofaScoreData";
 import { SofaLiveMatch, SofaMatch, TodayMatch } from "@/services/sofaScoreService";
@@ -63,6 +65,7 @@ const inDateRange = (ts: number, range: string) => {
 
 type MatchKind = "past" | "upcoming" | "live";
 type MatchListItem = SofaMatch & { _type?: MatchKind; minute?: string | null; period?: string | null };
+type MatchWidgetType = "lineups" | "attackMomentum";
 
 const extractTournamentId = (url: string) => {
   const match = url.match(/\/(\d+)(?:[/?#].*)?$/);
@@ -99,6 +102,8 @@ const liveToMatch = (match: SofaLiveMatch): MatchListItem => ({
   awayTeamImageUrl: match.awayTeamImageUrl,
   homeScore: match.homeScore,
   awayScore: match.awayScore,
+  homePenaltyScore: match.homePenaltyScore,
+  awayPenaltyScore: match.awayPenaltyScore,
   status: match.status,
   startTimestamp: 0,
   tournament: match.tournament,
@@ -120,11 +125,14 @@ const todayToMatch = (match: TodayMatch): MatchListItem => ({
   awayTeamImageUrl: match.awayTeamImageUrl,
   homeScore: match.homeScore,
   awayScore: match.awayScore,
+  homePenaltyScore: match.homePenaltyScore,
+  awayPenaltyScore: match.awayPenaltyScore,
   status: match.status,
   startTimestamp: match.startTimestamp || 0,
   tournament: match.tournament,
   tournamentId: match.tournamentId,
-  roundInfo: null,
+  roundInfo: match.roundInfo ?? null,
+  roundName: match.roundName,
   venue: match.venue,
   minute: isLive(match.status) ? match.time : null,
   _type: matchKindFromStatus(match.status),
@@ -176,6 +184,151 @@ const TeamName = ({
     <span className="truncate">{name}</span>
   </span>
 );
+
+type ScoreLike = {
+  homeScore: number | null;
+  awayScore: number | null;
+  homePenaltyScore?: number | null;
+  awayPenaltyScore?: number | null;
+};
+
+const hasScore = (match: ScoreLike) => typeof match.homeScore === "number" && typeof match.awayScore === "number";
+
+const hasPenaltyScore = (match: ScoreLike) =>
+  typeof match.homePenaltyScore === "number" && typeof match.awayPenaltyScore === "number";
+
+const MatchScore = ({ match, liveTone = false }: { match: ScoreLike; liveTone?: boolean }) => {
+  if (!hasScore(match)) return <span className="text-sm font-medium text-muted-foreground">vs</span>;
+
+  return (
+    <span className={`inline-flex items-baseline justify-center gap-1.5 font-display text-xl font-bold ${liveTone ? "text-destructive" : "text-foreground"}`}>
+      <span>{match.homeScore} - {match.awayScore}</span>
+      {hasPenaltyScore(match) && (
+        <span className="text-xs font-semibold text-muted-foreground">
+          ({match.homePenaltyScore} - {match.awayPenaltyScore} pen.)
+        </span>
+      )}
+    </span>
+  );
+};
+
+const slugForSofaScore = (value: string) =>
+  normalizeText(value).replace(/\s+/g, "-") || "match";
+
+const sofaScoreMatchUrl = (match: MatchListItem) =>
+  `https://www.sofascore.com/pt/football/match/${slugForSofaScore(match.homeTeam)}-${slugForSofaScore(match.awayTeam)}/#id:${match.id}`;
+
+const sofaScoreWidgetUrl = (type: MatchWidgetType, eventId: number) =>
+  `https://widgets.sofascore.com/pt-BR/embed/${type}?id=${eventId}&widgetTheme=light`;
+
+const widgetUnavailableText = "Se o widget ficar em branco, esta informacao ainda nao esta disponivel para esta partida no SofaScore.";
+
+const MatchWidgetFrame = ({
+  title,
+  src,
+  height,
+}: {
+  title: string;
+  src: string;
+  height: number;
+}) => (
+  <div className="overflow-hidden rounded-lg border border-border bg-background">
+    <iframe
+      title={title}
+      src={src}
+      loading="lazy"
+      className="w-full"
+      style={{ height }}
+      frameBorder={0}
+      scrolling="no"
+    />
+  </div>
+);
+
+const MatchDetailsDialog = ({
+  match,
+  onClose,
+}: {
+  match: MatchListItem | null;
+  onClose: () => void;
+}) => {
+  if (!match) return null;
+
+  const st = statusConfig(match.status);
+  const externalUrl = sofaScoreMatchUrl(match);
+
+  return (
+    <Dialog open={Boolean(match)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-5xl">
+        <DialogHeader>
+          <DialogTitle className="font-display text-xl">
+            {match.homeTeam} x {match.awayTeam}
+          </DialogTitle>
+          <DialogDescription>
+            {match.tournament}
+            {match.roundInfo ? ` - Rodada ${match.roundInfo}` : ""}
+            {match.startTimestamp > 0 ? ` - ${formatDate(match.startTimestamp)}` : ""}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 flex-1 items-center justify-center gap-4">
+              <div className="min-w-0 flex-1 text-right">
+                <TeamName name={match.homeTeam} imageUrl={match.homeTeamImageUrl} align="right" />
+              </div>
+              <div className="min-w-[4.5rem] text-center font-display text-xl font-bold text-foreground">
+                <MatchScore match={match} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <TeamName name={match.awayTeam} imageUrl={match.awayTeamImageUrl} />
+              </div>
+            </div>
+            <span className={`self-center rounded-full px-2.5 py-0.5 text-xs font-medium ${st.cls}`}>{st.text}</span>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs text-muted-foreground">
+            {match.roundName && <span>{match.roundName}</span>}
+            {match.venue && <span>Local: {match.venue}</span>}
+            {match.minute && <span className="font-medium text-destructive">{match.minute}</span>}
+            {match.period && <span>{match.period}</span>}
+            <a href={externalUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sport hover:underline">
+              Ver no SofaScore <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        </div>
+
+        <Tabs defaultValue="lineups" className="space-y-4">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="lineups" className="gap-2">
+              <Users className="h-4 w-4" />
+              Formacoes
+            </TabsTrigger>
+            <TabsTrigger value="momentum" className="gap-2">
+              <Activity className="h-4 w-4" />
+              Momento de ataque
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="lineups" className="space-y-2">
+            <MatchWidgetFrame
+              title={`Formacoes de ${match.homeTeam} x ${match.awayTeam}`}
+              src={sofaScoreWidgetUrl("lineups", match.id)}
+              height={786}
+            />
+            <p className="text-xs text-muted-foreground">{widgetUnavailableText}</p>
+          </TabsContent>
+          <TabsContent value="momentum" className="space-y-2">
+            <MatchWidgetFrame
+              title={`Momento de ataque de ${match.homeTeam} x ${match.awayTeam}`}
+              src={sofaScoreWidgetUrl("attackMomentum", match.id)}
+              height={286}
+            />
+            <p className="text-xs text-muted-foreground">{widgetUnavailableText}</p>
+          </TabsContent>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
+  );
+};
 
 type TeamSide = "home" | "away";
 type WatchedMatch = { side: TeamSide };
@@ -248,12 +401,16 @@ const MatchCard = ({ m }: { m: SofaMatch & { _type?: string } }) => {
   );
 };
 
-const MatchListCard = ({ m, liveTone = false }: { m: MatchListItem; liveTone?: boolean }) => {
+const MatchListCard = ({ m, liveTone = false, onSelect }: { m: MatchListItem; liveTone?: boolean; onSelect?: (match: MatchListItem) => void }) => {
   const st = statusConfig(m.status);
-  const isUpcoming = m._type === "upcoming" || m.homeScore === null || m.awayScore === null;
+  const isUpcoming = m._type === "upcoming" || !hasScore(m);
 
   return (
-    <div className={`rounded-xl border bg-card p-5 hover:shadow-md transition-shadow ${liveTone ? "border-destructive/30" : "border-border"}`}>
+    <button
+      type="button"
+      onClick={() => onSelect?.(m)}
+      className={`w-full rounded-xl border bg-card p-5 text-left hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-sport/50 ${liveTone ? "border-destructive/30" : "border-border"}`}
+    >
       <div className="flex items-center gap-4">
         <div className="min-w-0 flex-1 text-right">
           <p className="font-display font-semibold text-foreground">
@@ -262,9 +419,7 @@ const MatchListCard = ({ m, liveTone = false }: { m: MatchListItem; liveTone?: b
         </div>
         <div className="flex min-w-[4.5rem] items-center justify-center gap-2 text-center">
           {!isUpcoming ? (
-            <span className={`font-display text-xl font-bold ${liveTone ? "text-destructive" : "text-foreground"}`}>
-              {m.homeScore} - {m.awayScore}
-            </span>
+            <MatchScore match={m} liveTone={liveTone} />
           ) : (
             <span className="text-sm font-medium text-muted-foreground">{m.minute || "vs"}</span>
           )}
@@ -283,8 +438,9 @@ const MatchListCard = ({ m, liveTone = false }: { m: MatchListItem; liveTone?: b
         {m.minute && !isUpcoming && <span className="text-xs font-medium text-destructive">{m.minute}</span>}
         {m.period && <span className="text-xs text-muted-foreground">{m.period}</span>}
         <span className="text-xs text-muted-foreground">Local: {m.venue || "TBD"}</span>
+        <span className="text-xs font-medium text-sport">Detalhes</span>
       </div>
-    </div>
+    </button>
   );
 };
 
@@ -294,6 +450,7 @@ const MatchesPage = () => {
   const [tab, setTab] = useState<"league" | "today" | "live">("league");
   const [filters, setFilters] = useState<Record<string, string>>({ status: "all", date: "all" });
   const [watchedMatches, setWatchedMatches] = useState<Record<number, WatchedMatch>>({});
+  const [selectedMatch, setSelectedMatch] = useState<MatchListItem | null>(null);
   const scoreSnapshots = useRef<Record<number, ScoreSnapshot>>({});
 
   const { lastMatches, nextMatches, allMatches, status, error, refetch } = useMatches(league.sofascoreUrl);
@@ -344,8 +501,35 @@ const MatchesPage = () => {
     },
   ];
 
-  const applyFilters = useCallback(<T extends { homeTeam: string; awayTeam: string; tournament: string; status: string; startTimestamp?: number }>(
-    list: T[]
+  const roundOptions = useMemo(
+    () =>
+      Array.from(new Set(leagueMatches.map((match) => match.roundInfo).filter((round): round is number => typeof round === "number")))
+        .sort((a, b) => a - b)
+        .map((round) => ({ value: String(round), label: `Rodada ${round}` })),
+    [leagueMatches]
+  );
+
+  useEffect(() => {
+    if (filters.round && filters.round !== "all" && !roundOptions.some((option) => option.value === filters.round)) {
+      setFilters((current) => ({ ...current, round: "all" }));
+    }
+  }, [filters.round, roundOptions]);
+
+  const activeFilterDefs: FilterDef[] =
+    tab === "league" && roundOptions.length > 0
+      ? [
+          ...filterDefs,
+          {
+            key: "round",
+            label: "Rodada",
+            options: roundOptions,
+          },
+        ]
+      : filterDefs;
+
+  const applyFilters = useCallback(<T extends { homeTeam: string; awayTeam: string; tournament: string; status: string; startTimestamp?: number; roundInfo?: number | null }>(
+    list: T[],
+    includeRound = false
   ): T[] => {
     const q = search.toLowerCase();
     return list.filter((m) => {
@@ -354,11 +538,12 @@ const MatchesPage = () => {
       if (filters.status === "scheduled" && !isScheduled(m.status)) return false;
       if (filters.status === "finished" && !isFinished(m.status)) return false;
       if (m.startTimestamp && !inDateRange(m.startTimestamp, filters.date)) return false;
+      if (includeRound && filters.round && filters.round !== "all" && String(m.roundInfo || "") !== filters.round) return false;
       return true;
     });
-  }, [filters.date, filters.status, search]);
+  }, [filters.date, filters.round, filters.status, search]);
 
-  const filtered = useMemo(() => (tab === "league" ? applyFilters(leagueMatches) : []), [tab, leagueMatches, applyFilters]);
+  const filtered = useMemo(() => (tab === "league" ? applyFilters(leagueMatches, true) : []), [tab, leagueMatches, applyFilters]);
   const filteredToday = useMemo(() => (tab === "today" ? applyFilters(todayMatches) : []), [tab, todayMatches, applyFilters]);
   const filteredLive = useMemo(() => (tab === "live" ? applyFilters(liveMatches) : []), [tab, liveMatches, applyFilters]);
 
@@ -470,10 +655,10 @@ const MatchesPage = () => {
       </div>
 
       <FilterBar
-        filters={filterDefs}
+        filters={activeFilterDefs}
         values={filters}
         onChange={(k, v) => setFilters((p) => ({ ...p, [k]: v }))}
-        onClear={() => setFilters({ status: "all", date: "all" })}
+        onClear={() => setFilters({ status: "all", date: "all", round: "all" })}
       />
 
       <div className="space-y-3">
@@ -490,7 +675,14 @@ const MatchesPage = () => {
         {tab === "league" && !isLoading && filtered.length === 0 && !error && (
           <p className="text-center text-sm text-muted-foreground py-8">Nenhuma partida encontrada com os filtros aplicados.</p>
         )}
-        {tab === "league" && filtered.map((m) => (<MatchListCard key={`${m.id}_${m._type ?? "match"}`} m={m} liveTone={isLive(m.status)} />))}
+        {tab === "league" && filtered.map((m) => (
+          <MatchListCard
+            key={`${m.id}_${m._type ?? "match"}`}
+            m={m}
+            liveTone={isLive(m.status)}
+            onSelect={setSelectedMatch}
+          />
+        ))}
 
         {tab === "today" && !isLoading && filteredToday.length === 0 && (
           <p className="text-center text-sm text-muted-foreground py-8">Nenhum jogo encontrado para os filtros aplicados.</p>
@@ -498,7 +690,16 @@ const MatchesPage = () => {
         {tab === "today" && filteredToday.map((m) => {
           const st = statusConfig(m.status);
           return (
-            <div key={m.id} className="rounded-xl border border-border bg-card p-5 hover:shadow-md transition-shadow">
+            <div
+              key={m.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => setSelectedMatch(todayToMatch(m))}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") setSelectedMatch(todayToMatch(m));
+              }}
+              className="cursor-pointer rounded-xl border border-border bg-card p-5 hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-sport/50"
+            >
               <div className="flex items-center gap-4">
                 <div className="min-w-0 flex-1 text-right">
                   <p className="font-display font-semibold text-foreground">
@@ -523,6 +724,7 @@ const MatchesPage = () => {
                 <span className="text-xs text-muted-foreground">{m.tournament}</span>
                 {m.time && <span className="text-xs text-muted-foreground">{m.time}</span>}
                 <span className="text-xs text-muted-foreground">Local: {m.venue || "TBD"}</span>
+                <span className="text-xs font-medium text-sport">Detalhes</span>
               </div>
             </div>
           );
@@ -535,7 +737,16 @@ const MatchesPage = () => {
           </div>
         )}
         {tab === "live" && filteredLive.map((m) => (
-          <div key={m.id} className="rounded-xl border border-destructive/30 bg-card p-5 hover:shadow-md transition-shadow">
+          <div
+            key={m.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => setSelectedMatch(liveToMatch(m))}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") setSelectedMatch(liveToMatch(m));
+            }}
+            className="cursor-pointer rounded-xl border border-destructive/30 bg-card p-5 hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-sport/50"
+          >
             <div className="flex items-center gap-4">
               <div className="min-w-0 flex-1 text-right">
                 <p className="font-display font-semibold text-foreground">
@@ -556,6 +767,7 @@ const MatchesPage = () => {
               <span className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-destructive/10 text-destructive">🔴 Ao Vivo</span>
               <span className="text-xs text-muted-foreground">{m.tournament}</span>
               {"period" in m && m.period && <span className="text-xs text-muted-foreground">{m.period}</span>}
+              <span className="text-xs font-medium text-sport">Detalhes</span>
             </div>
             <div className="mt-4 flex flex-col items-center gap-2 border-t border-border pt-3 sm:flex-row sm:justify-center">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -573,7 +785,10 @@ const MatchesPage = () => {
                     <button
                       key={side}
                       type="button"
-                      onClick={() => toggleWatchedMatch(m, side)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleWatchedMatch(m, side);
+                      }}
                       title={`Tocar comemoracao para gol do ${teamName} e lamentacao para gol do ${opponentName}`}
                       className={`inline-flex max-w-[11rem] items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
                         active
@@ -601,6 +816,8 @@ const MatchesPage = () => {
           </div>
         )}
       </div>
+
+      <MatchDetailsDialog match={selectedMatch} onClose={() => setSelectedMatch(null)} />
     </div>
   );
 };

@@ -1,5 +1,6 @@
 const { spawn } = require("child_process");
 const fs = require("fs");
+const net = require("net");
 const os = require("os");
 const path = require("path");
 
@@ -28,9 +29,39 @@ function findPython() {
 
 const python = findPython();
 const script = path.resolve(__dirname, "scraperfc_bridge.py");
-const bridge = spawn(python, [script], {
-  env: { ...process.env, SCRAPERFC_PORT: process.env.SCRAPERFC_PORT || "8787" },
-  stdio: "inherit",
-});
+const port = Number(process.env.SCRAPERFC_PORT || "8787");
 
-bridge.on("exit", (code) => process.exit(code ?? 0));
+function isPortOpen(portNumber) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port: portNumber });
+    socket.setTimeout(1000);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", () => resolve(false));
+  });
+}
+
+async function main() {
+  if (await isPortOpen(port)) {
+    console.log(`ScraperFC bridge already listening at http://127.0.0.1:${port}`);
+    return;
+  }
+
+  const bridge = spawn(python, [script], {
+    env: { ...process.env, SCRAPERFC_PORT: String(port) },
+    stdio: "inherit",
+  });
+
+  bridge.on("exit", (code) => process.exit(code ?? 0));
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

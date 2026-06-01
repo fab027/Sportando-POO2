@@ -179,6 +179,15 @@ const nearbyImageUrl = (html: string, baseUrl: string) => {
 const isProbablyNewsUrl = (url: string) =>
   !/\/(jogo|tempo-real|resultados|placar|tabela|agenda|video\/clip)\b/i.test(url);
 
+const elementBlockAt = (html: string, index: number, closeTag: string, maxLength = 3200) => {
+  const end = html.indexOf(closeTag, index);
+  if (end < 0 || end - index > maxLength) return html.slice(index, index + maxLength);
+  return html.slice(index, end + closeTag.length);
+};
+
+const titleFromAnchorBlock = (block: string) =>
+  cleanNewsText(block.replace(/<svg[\s\S]*?<\/svg>/gi, " ").replace(/<picture[\s\S]*?<\/picture>/gi, " "));
+
 const directNewsItem = (
   source: NewsSource,
   sport: string,
@@ -240,10 +249,16 @@ const parseLanceLatest = (html: string, source: NewsSource, sport: string, baseU
 
   while ((match = anchorPattern.exec(html)) && items.length < 48) {
     const tag = match[0];
+    const block = elementBlockAt(html, match.index, "</a>");
     const href = attrFromTag(tag, "href");
-    const title = attrFromTag(tag, "aria-label") || attrFromTag(tag, "data-ga4-param-title") || attrFromTag(tag, "title");
+    const title =
+      attrFromTag(tag, "aria-label") ||
+      attrFromTag(tag, "data-ga4-param-title") ||
+      attrFromTag(tag, "title") ||
+      titleFromAnchorBlock(block);
     const url = absoluteUrl(href, baseUrl);
-    if (!title || !/\.html(?:$|\?)/i.test(url) || !isProbablyNewsUrl(url)) continue;
+    if (!title || title.length < 24 || !/lance\.com\.br\/.+/i.test(url) || !isProbablyNewsUrl(url)) continue;
+    if (/\/(futebol(?:-nacional|-internacional)?|brasileir[aã]o|times?|videos?|galerias?|colunas?|mais-esportes?)\/?$/i.test(url)) continue;
 
     const segment = html.slice(match.index, match.index + 2600);
     const publishedAt = parseBrazilDateTime(segment.match(/(\d{2}\/\d{2}\/\d{4}\s*[-–]\s*\d{2}:\d{2})/)?.[1]) || parseDateFromUrl(url);
@@ -280,6 +295,28 @@ const parseEspnLatest = (html: string, source: NewsSource, sport: string, baseUr
     if (item) items.push(item);
   }
 
+  const espnAnchorPattern = /<a\b[^>]*href=["']([^"']+)["'][^>]*>/gi;
+  while ((match = espnAnchorPattern.exec(html)) && items.length < 48) {
+    const href = match[1];
+    if (!/(\/futebol\/(?:artigo|video)|\/(?:futebol|video)\/.+\/_\/id\/)/i.test(href)) continue;
+
+    const block = elementBlockAt(html, match.index, "</a>");
+    const title =
+      attrFromTag(match[0], "aria-label") ||
+      attrFromTag(match[0], "title") ||
+      cleanNewsText(block.match(/contentItem__title[^>]*>([\s\S]*?)<\/h[23]>/i)?.[1] || "") ||
+      titleFromAnchorBlock(block);
+    if (!title || title.length < 24) continue;
+
+    const url = absoluteUrl(href, baseUrl);
+    const segment = html.slice(match.index, match.index + 1800);
+    const timeText = cleanNewsText(segment.match(/contentMeta__timestamp[^>]*>([\s\S]*?)<\/span>/i)?.[1] || "");
+    const publishedAt = parseRelativePublishedAt(timeText) || parseDateFromUrl(url);
+    const imageUrl = nearbyImageUrl(segment, baseUrl);
+    const item = directNewsItem(source, sport, { title, url, imageUrl, publishedAt });
+    if (item) items.push(item);
+  }
+
   return items;
 };
 
@@ -289,6 +326,55 @@ const parseKnownSourceLatest = (html: string, source: NewsSource, sport: string,
   if (domain.endsWith("lance.com.br")) return parseLanceLatest(html, source, sport, baseUrl);
   if (domain.endsWith("espn.com.br")) return parseEspnLatest(html, source, sport, baseUrl);
   return [];
+};
+
+type JsonRecord = Record<string, unknown>;
+
+const asRecord = (value: unknown): JsonRecord =>
+  value && typeof value === "object" ? (value as JsonRecord) : {};
+
+const textValue = (value: unknown) =>
+  typeof value === "string" || typeof value === "number" ? String(value) : "";
+
+const espnArticleUrl = (article: JsonRecord) => {
+  const links = asRecord(article.links);
+  const web = asRecord(links.web);
+  return textValue(web.href || article.link || article.url);
+};
+
+const espnArticleImageUrl = (article: JsonRecord) => {
+  const images = Array.isArray(article.images) ? article.images : [];
+  const image = images.map(asRecord).find((item) => textValue(item.url));
+  return textValue(image?.url || article.imageUrl);
+};
+
+const parseEspnApiNews = (data: unknown, source: NewsSource, sport: string) => {
+  const payload = asRecord(data);
+  const articles = Array.isArray(payload.articles) ? payload.articles : [];
+  return articles
+    .map((rawArticle) => {
+      const article = asRecord(rawArticle);
+      const articleUrl = espnArticleUrl(article);
+      const articleId = textValue(article.id);
+      return (
+      normalizeNewsItem(
+        {
+          id: articleId ? `${source.id || source.name}-${articleId}` : articleUrl,
+          title: textValue(article.headline || article.title),
+          description: textValue(article.description || article.story),
+          source: source.name,
+          sourceUrl: source.url,
+          url: articleUrl,
+          imageUrl: espnArticleImageUrl(article),
+          publishedAt: textValue(article.published || article.lastModified),
+          sport,
+          tags: [sport],
+        },
+        source
+      )
+      );
+    })
+    .filter((item: NewsItem | null): item is NewsItem => Boolean(item));
 };
 
 const sourceKey = (source: NewsSource) => `${source.name}:${source.url}`.toLowerCase();
@@ -360,9 +446,11 @@ export const normalizeNewsItem = (raw: RawNewsItem, fallbackSource?: NewsSource)
 export const removeDuplicateNews = (items: NewsItem[]) => {
   const seen = new Set<string>();
   return items.filter((item) => {
-    const key = item.url || `${item.title}:${item.source}`.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
+    const urlKey = item.url;
+    const titleKey = `${normalizeDomain(item.sourceUrl || item.url)}:${cleanNewsText(item.title).toLowerCase()}`;
+    if ((urlKey && seen.has(urlKey)) || seen.has(titleKey)) return false;
+    if (urlKey) seen.add(urlKey);
+    seen.add(titleKey);
     return true;
   });
 };
@@ -409,6 +497,30 @@ const fetchDevDirectSiteNews = async (source: NewsSource, sport: string) => {
   return parseKnownSourceLatest(await res.text(), source, sport, url);
 };
 
+const fetchDevEspnApiNews = async (source: NewsSource, sport: string) => {
+  if (!normalizeDomain(source.url).endsWith("espn.com.br")) return [];
+  const paths =
+    sport === "basketball"
+      ? ["/espn-api/apis/site/v2/sports/basketball/nba/news?limit=50&region=br&lang=pt"]
+      : [
+          "/espn-api/apis/site/v2/sports/soccer/all/news?limit=50&region=br&lang=pt",
+          "/espn-api/apis/site/v2/sports/soccer/bra.1/news?limit=50&region=br&lang=pt",
+        ];
+
+  const batches = await Promise.allSettled(
+    paths.map(async (path) => {
+      const res = await fetch(path, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) throw new Error(`ESPN API HTTP ${res.status}`);
+      return parseEspnApiNews(await res.json(), source, sport);
+    })
+  );
+
+  return sortNewsByDate(removeDuplicateNews(batches.flatMap((batch) => (batch.status === "fulfilled" ? batch.value : []))));
+};
+
 const fetchDevGoogleSiteNews = async (source: NewsSource, terms: string[], sport: string) => {
   const domain = normalizeDomain(source.url);
   const query = terms.length
@@ -426,6 +538,7 @@ const fetchDevGoogleSiteNews = async (source: NewsSource, terms: string[], sport
 
 const fetchDevSiteNews = async (source: NewsSource, terms: string[], sport: string) => {
   const batches = await Promise.allSettled([
+    fetchDevEspnApiNews(source, sport),
     fetchDevDirectSiteNews(source, sport),
     fetchDevGoogleSiteNews(source, terms, sport),
   ]);
@@ -440,6 +553,9 @@ const fetchNewsFromSourcesDevFallback = async ({ sources, terms = [], sport = "f
     removeDuplicateNews(batches.flatMap((batch) => (batch.status === "fulfilled" ? batch.value : [])))
   );
 };
+
+const mergeNewsBatches = (...batches: NewsItem[][]) =>
+  sortNewsByDate(removeDuplicateNews(batches.flatMap((batch) => batch)));
 
 export const fetchNewsFromSources = async ({ sources, terms = [], sport = "football" }: NewsObserverOptions) => {
   const activeSources = sources.map(normalizeNewsSource).filter((source) => source.active);
@@ -457,7 +573,12 @@ export const fetchNewsFromSources = async ({ sources, terms = [], sport = "footb
       .map((item: RawNewsItem) => normalizeNewsItem(item))
       .filter((item: NewsItem | null): item is NewsItem => Boolean(item));
 
-    return sortNewsByDate(removeDuplicateNews(normalized));
+    if (import.meta.env.DEV) {
+      const fallbackItems = await fetchNewsFromSourcesDevFallback({ sources: activeSources, terms, sport }).catch(() => []);
+      return mergeNewsBatches(normalized, fallbackItems);
+    }
+
+    return mergeNewsBatches(normalized);
   } catch (error) {
     if (import.meta.env.DEV) {
       const fallbackItems = await fetchNewsFromSourcesDevFallback({ sources: activeSources, terms, sport });

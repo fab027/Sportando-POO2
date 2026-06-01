@@ -95,17 +95,13 @@ export function useMatches(leagueUrl: string) {
   const fetchData = useCallback(async (options?: FetchOptions) => {
     setStatus("loading");
     try {
-      const [lastRaw, nextRaw] = await Promise.all([
-        cached(`last_v6_${leagueUrl}`, () => sofaScoreService.getLastMatches(leagueUrl), options?.force),
-        cached(`next_v6_${leagueUrl}`, () => sofaScoreService.getNextMatches(leagueUrl), options?.force),
-      ]);
-      const last = Array.isArray(lastRaw) ? lastRaw : [];
-      const next = Array.isArray(nextRaw) ? nextRaw : [];
+      const seasonRaw = await cached(`season_v1_${leagueUrl}`, () => sofaScoreService.getSeasonMatches(leagueUrl), options?.force);
+      const seasonMatches = Array.isArray(seasonRaw) ? seasonRaw : [];
       const nowSec = Math.floor(Date.now() / 1000);
-      const cleanLast = last
+      const cleanLast = seasonMatches
         .filter((m) => m.startTimestamp && m.startTimestamp < nowSec)
         .sort((a, b) => b.startTimestamp - a.startTimestamp);
-      const cleanNext = next
+      const cleanNext = seasonMatches
         .filter((m) => m.startTimestamp && m.startTimestamp >= nowSec - 3600)
         .sort((a, b) => a.startTimestamp - b.startTimestamp);
       const fallback = getFallbackMatches(leagueUrl);

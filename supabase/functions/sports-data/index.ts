@@ -228,6 +228,8 @@ const squadSchema = {
 };
 
 const SOFASCORE_BASE_URL = "https://www.sofascore.com/api/v1";
+const SEASON_EVENTS_PAGE_LIMIT = 20;
+const SEASON_ROUND_BATCH_SIZE = 6;
 const sofaFetch = async (path: string): Promise<any> => {
   const res = await fetch(`${SOFASCORE_BASE_URL}${path}`, {
     headers: {
@@ -259,6 +261,78 @@ const getCurrentSeasonId = async (uniqueTournamentId: number): Promise<number> =
   return Number(seasons[0].id);
 };
 
+const collectRoundNumbers = (value: unknown, rounds = new Set<number>()) => {
+  if (!value || typeof value !== "object") return rounds;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectRoundNumbers(item, rounds));
+    return rounds;
+  }
+
+  const object = value as Record<string, unknown>;
+  if (typeof object.round === "number") rounds.add(object.round);
+  Object.values(object).forEach((item) => collectRoundNumbers(item, rounds));
+  return rounds;
+};
+
+const getSeasonRoundNumbers = async (tournamentId: number, seasonId: number) => {
+  const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/rounds`);
+  return Array.from(collectRoundNumbers(data)).sort((a, b) => a - b);
+};
+
+const getEventsByRounds = async (tournamentId: number, seasonId: number) => {
+  const roundNumbers = await getSeasonRoundNumbers(tournamentId, seasonId);
+  if (!roundNumbers.length) throw new Error("No season rounds found");
+
+  const byId = new Map<number, any>();
+  for (let i = 0; i < roundNumbers.length; i += SEASON_ROUND_BATCH_SIZE) {
+    const batch = roundNumbers.slice(i, i + SEASON_ROUND_BATCH_SIZE);
+    const settled = await Promise.allSettled(
+      batch.map((round) => sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/round/${round}`))
+    );
+    settled.forEach((entry) => {
+      if (entry.status !== "fulfilled") return;
+      const events = Array.isArray(entry.value?.events) ? entry.value.events : [];
+      events.forEach((event: any) => {
+        if (typeof event?.id === "number") byId.set(event.id, event);
+      });
+    });
+  }
+
+  if (!byId.size) throw new Error("No events by round found");
+  return Array.from(byId.values());
+};
+
+const getPagedSeasonEvents = async (tournamentId: number, seasonId: number, endpoint: "last" | "next") => {
+  const byId = new Map<number, any>();
+  for (let page = 0; page < SEASON_EVENTS_PAGE_LIMIT; page += 1) {
+    const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/${endpoint}/${page}`);
+    const events = Array.isArray(data?.events) ? data.events : [];
+    if (!events.length) break;
+    events.forEach((event: any) => {
+      if (typeof event?.id === "number") byId.set(event.id, event);
+    });
+  }
+  return Array.from(byId.values());
+};
+
+const getSeasonEvents = async (tournamentId: number, seasonId: number, endpoint?: "last" | "next") => {
+  try {
+    return await getEventsByRounds(tournamentId, seasonId);
+  } catch {
+    if (endpoint) return getPagedSeasonEvents(tournamentId, seasonId, endpoint);
+
+    const [lastEvents, nextEvents] = await Promise.all([
+      getPagedSeasonEvents(tournamentId, seasonId, "last"),
+      getPagedSeasonEvents(tournamentId, seasonId, "next"),
+    ]);
+    const byId = new Map<number, any>();
+    [...lastEvents, ...nextEvents].forEach((event) => {
+      if (typeof event?.id === "number") byId.set(event.id, event);
+    });
+    return Array.from(byId.values());
+  }
+};
+
 const normalizeEventStatus = (event: any): string => {
   const type = event?.status?.type;
   if (type === "finished") return "Finished";
@@ -273,26 +347,52 @@ const teamImageUrl = (teamId?: number | null) =>
 const playerImageUrl = (playerId?: number | null) =>
   playerId ? `https://api.sofascore.app/api/v1/player/${playerId}/image` : null;
 
-const mapSofaEvent = (event: any) => ({
-  id: event.id,
-  homeTeamId: event.homeTeam?.id || null,
-  awayTeamId: event.awayTeam?.id || null,
-  homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
-  awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
-  homeTeamImageUrl: teamImageUrl(event.homeTeam?.id),
-  awayTeamImageUrl: teamImageUrl(event.awayTeam?.id),
-  homeScore:
-    typeof event.homeScore?.current === "number" ? event.homeScore.current : null,
-  awayScore:
-    typeof event.awayScore?.current === "number" ? event.awayScore.current : null,
-  status: normalizeEventStatus(event),
-  startTimestamp: event.startTimestamp || 0,
-  tournament:
-    event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
-  roundInfo:
-    typeof event.roundInfo?.round === "number" ? event.roundInfo.round : null,
-  venue: event.venue?.stadium?.name || event.venue?.name || event.venue?.city?.name || null,
-});
+const scoreNumber = (value: unknown) => (typeof value === "number" ? value : null);
+
+const scorePair = (homeScore: any, awayScore: any) => {
+  const homePenaltyScore = scoreNumber(homeScore?.penalties);
+  const awayPenaltyScore = scoreNumber(awayScore?.penalties);
+  const mainKeys = ["afterExtraTime", "normaltime", "current"];
+
+  const pickMain = (score: any) => {
+    for (const key of mainKeys) {
+      const value = scoreNumber(score?.[key]);
+      if (value !== null) return value;
+    }
+    return null;
+  };
+
+  return {
+    homeScore: pickMain(homeScore),
+    awayScore: pickMain(awayScore),
+    homePenaltyScore,
+    awayPenaltyScore,
+  };
+};
+
+const mapSofaEvent = (event: any) => {
+  const scores = scorePair(event.homeScore, event.awayScore);
+  return {
+    id: event.id,
+    homeTeamId: event.homeTeam?.id || null,
+    awayTeamId: event.awayTeam?.id || null,
+    homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
+    awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
+    homeTeamImageUrl: teamImageUrl(event.homeTeam?.id),
+    awayTeamImageUrl: teamImageUrl(event.awayTeam?.id),
+    homeScore: scores.homeScore,
+    awayScore: scores.awayScore,
+    homePenaltyScore: scores.homePenaltyScore,
+    awayPenaltyScore: scores.awayPenaltyScore,
+    status: normalizeEventStatus(event),
+    startTimestamp: event.startTimestamp || 0,
+    tournament:
+      event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
+    roundInfo:
+      typeof event.roundInfo?.round === "number" ? event.roundInfo.round : null,
+    venue: event.venue?.stadium?.name || event.venue?.name || event.venue?.city?.name || null,
+  };
+};
 
 const eventCountry = (event: any) =>
   event?.tournament?.category?.name ||
@@ -352,23 +452,28 @@ const getLivePeriod = (event: any): string | null => {
   return event?.status?.description || null;
 };
 
-const mapSofaLiveEvent = (event: any) => ({
-  id: event.id,
-  homeTeamId: event.homeTeam?.id || null,
-  awayTeamId: event.awayTeam?.id || null,
-  homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
-  awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
-  homeTeamImageUrl: teamImageUrl(event.homeTeam?.id),
-  awayTeamImageUrl: teamImageUrl(event.awayTeam?.id),
-  homeScore: event.homeScore?.current ?? 0,
-  awayScore: event.awayScore?.current ?? 0,
-  status: "Live",
-  minute: getLiveMinute(event),
-  period: getLivePeriod(event),
-  tournament:
-    event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
-  country: eventCountry(event),
-});
+const mapSofaLiveEvent = (event: any) => {
+  const scores = scorePair(event.homeScore, event.awayScore);
+  return {
+    id: event.id,
+    homeTeamId: event.homeTeam?.id || null,
+    awayTeamId: event.awayTeam?.id || null,
+    homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
+    awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
+    homeTeamImageUrl: teamImageUrl(event.homeTeam?.id),
+    awayTeamImageUrl: teamImageUrl(event.awayTeam?.id),
+    homeScore: scores.homeScore ?? event.homeScore?.current ?? 0,
+    awayScore: scores.awayScore ?? event.awayScore?.current ?? 0,
+    homePenaltyScore: scores.homePenaltyScore,
+    awayPenaltyScore: scores.awayPenaltyScore,
+    status: "Live",
+    minute: getLiveMinute(event),
+    period: getLivePeriod(event),
+    tournament:
+      event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
+    country: eventCountry(event),
+  };
+};
 
 const todayLocalIso = () =>
   new Intl.DateTimeFormat("en-CA", {
@@ -587,18 +692,15 @@ serve(async (req) => {
           points: row.points || 0,
         })),
       };
-    } else if (action === "matches_last" || action === "matches_next") {
+    } else if (action === "matches_season" || action === "matches_last" || action === "matches_next") {
       const { leagueUrl } = body;
       if (!leagueUrl) throw new Error("leagueUrl required");
       const isLast = action === "matches_last";
 
       const tournamentId = uniqueTournamentIdFromUrl(leagueUrl);
       const seasonId = await getCurrentSeasonId(tournamentId);
-      const endpoint = isLast ? "last" : "next";
-      const data = await sofaFetch(
-        `/unique-tournament/${tournamentId}/season/${seasonId}/events/${endpoint}/0`
-      );
-      const events = Array.isArray(data?.events) ? data.events : [];
+      const endpoint = action === "matches_last" ? "last" : action === "matches_next" ? "next" : undefined;
+      const events = await getSeasonEvents(tournamentId, seasonId, endpoint);
       result = events
         .map(mapSofaEvent)
         .sort((a: any, b: any) =>
@@ -628,6 +730,8 @@ serve(async (req) => {
             awayTeamImageUrl: mapped.awayTeamImageUrl,
             homeScore: mapped.homeScore,
             awayScore: mapped.awayScore,
+            homePenaltyScore: mapped.homePenaltyScore,
+            awayPenaltyScore: mapped.awayPenaltyScore,
             status: mapped.status,
             time:
               mapped.status === "Live"

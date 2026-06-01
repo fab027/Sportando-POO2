@@ -8,7 +8,10 @@ const SCRAPERFC_RAW_URL = "/scraperfc-api/sofascore";
 const SPORTS_DATA_TIMEOUT_MS = 4000;
 const SCRAPERFC_TIMEOUT_MS = 25000;
 const SCRAPERFC_COOLDOWN_MS = 60_000;
-let scraperFcUnavailableUntil = 0;
+const SEASON_EVENTS_PAGE_LIMIT = 20;
+const SEASON_ROUND_BATCH_SIZE = 6;
+const scraperFcUnavailableUntilByScope = new Map<string, number>();
+const currentSeasonIdCache = new Map<number, Promise<number>>();
 
 const teamImageUrl = (teamId?: number | null) =>
   teamId ? `https://api.sofascore.app/api/v1/team/${teamId}/image` : null;
@@ -21,7 +24,15 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   return fetch(input, { ...init, signal: controller.signal }).finally(() => window.clearTimeout(timeout));
 }
 
+const scraperScopeUnavailable = (scope: string) =>
+  (scraperFcUnavailableUntilByScope.get(scope) || 0) > Date.now();
+
+const markScraperScopeUnavailable = (scope: string) => {
+  scraperFcUnavailableUntilByScope.set(scope, Date.now() + SCRAPERFC_COOLDOWN_MS);
+};
+
 export async function fetchSofaScoreJson(path: string) {
+  const scraperScope = `raw:${path}`;
   try {
     const res = await fetch(`${SOFASCORE_PROXY_URL}${path}`, {
       headers: { Accept: "application/json" },
@@ -29,7 +40,7 @@ export async function fetchSofaScoreJson(path: string) {
     if (!res.ok) throw new Error(`SofaScore HTTP ${res.status}`);
     return res.json();
   } catch (directError) {
-    if (!import.meta.env.DEV || Date.now() < scraperFcUnavailableUntil) {
+    if (!import.meta.env.DEV || scraperScopeUnavailable(scraperScope)) {
       throw directError;
     }
 
@@ -42,7 +53,7 @@ export async function fetchSofaScoreJson(path: string) {
       if (!res.ok) throw new Error(`ScraperFC HTTP ${res.status}`);
       return res.json();
     } catch {
-      scraperFcUnavailableUntil = Date.now() + SCRAPERFC_COOLDOWN_MS;
+      markScraperScopeUnavailable(scraperScope);
       throw directError;
     }
   }
@@ -53,7 +64,8 @@ async function sofaFetch(path: string) {
 }
 
 async function callScraperFcSportsData(body: Record<string, unknown>) {
-  if (!import.meta.env.DEV || Date.now() < scraperFcUnavailableUntil) {
+  const scraperScope = `action:${JSON.stringify(body)}`;
+  if (!import.meta.env.DEV || scraperScopeUnavailable(scraperScope)) {
     throw new Error("ScraperFC indisponivel");
   }
 
@@ -73,7 +85,7 @@ async function callScraperFcSportsData(body: Record<string, unknown>) {
     }
     return res.json();
   } catch (error) {
-    scraperFcUnavailableUntil = Date.now() + SCRAPERFC_COOLDOWN_MS;
+    markScraperScopeUnavailable(scraperScope);
     throw error;
   }
 }
@@ -109,10 +121,97 @@ function uniqueTournamentIdFromUrl(leagueUrl: string) {
 }
 
 async function getCurrentSeasonId(uniqueTournamentId: number) {
-  const data = await sofaFetch(`/unique-tournament/${uniqueTournamentId}/seasons`);
-  const season = data?.seasons?.[0];
-  if (!season?.id) throw new Error("Temporada não encontrada");
-  return Number(season.id);
+  const cached = currentSeasonIdCache.get(uniqueTournamentId);
+  if (cached) return cached;
+
+  const request = sofaFetch(`/unique-tournament/${uniqueTournamentId}/seasons`)
+    .then((data) => {
+      const season = data?.seasons?.[0];
+      if (!season?.id) throw new Error("Temporada não encontrada");
+      return Number(season.id);
+    })
+    .catch((error) => {
+      currentSeasonIdCache.delete(uniqueTournamentId);
+      throw error;
+    });
+  currentSeasonIdCache.set(uniqueTournamentId, request);
+  return request;
+}
+
+const collectRoundNumbers = (value: unknown, rounds = new Set<number>()) => {
+  if (!value || typeof value !== "object") return rounds;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectRoundNumbers(item, rounds));
+    return rounds;
+  }
+
+  const object = value as Record<string, unknown>;
+  if (typeof object.round === "number") rounds.add(object.round);
+  Object.values(object).forEach((item) => collectRoundNumbers(item, rounds));
+  return rounds;
+};
+
+async function getSeasonRoundNumbers(tournamentId: number, seasonId: number) {
+  const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/rounds`);
+  return Array.from(collectRoundNumbers(data)).sort((a, b) => a - b);
+}
+
+async function getEventsByRounds(tournamentId: number, seasonId: number) {
+  const roundNumbers = await getSeasonRoundNumbers(tournamentId, seasonId);
+  if (roundNumbers.length === 0) throw new Error("Rodadas da temporada não encontradas");
+
+  const byId = new Map<number, any>();
+  for (let i = 0; i < roundNumbers.length; i += SEASON_ROUND_BATCH_SIZE) {
+    const batch = roundNumbers.slice(i, i + SEASON_ROUND_BATCH_SIZE);
+    const settled = await Promise.allSettled(
+      batch.map((round) => sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/round/${round}`))
+    );
+
+    settled.forEach((entry) => {
+      if (entry.status !== "fulfilled") return;
+      const events = Array.isArray(entry.value?.events) ? entry.value.events : [];
+      events.forEach((event: any) => {
+        if (typeof event?.id === "number") byId.set(event.id, event);
+      });
+    });
+  }
+
+  if (byId.size === 0) throw new Error("Eventos por rodada não encontrados");
+  return Array.from(byId.values());
+}
+
+async function getPagedSeasonEvents(tournamentId: number, seasonId: number, endpoint: "last" | "next") {
+  const byId = new Map<number, any>();
+
+  for (let page = 0; page < SEASON_EVENTS_PAGE_LIMIT; page += 1) {
+    const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/${endpoint}/${page}`);
+    const events = Array.isArray(data?.events) ? data.events : [];
+    if (events.length === 0) break;
+
+    events.forEach((event: any) => {
+      if (typeof event?.id === "number") byId.set(event.id, event);
+    });
+  }
+
+  return Array.from(byId.values());
+}
+
+async function getSeasonEvents(tournamentId: number, seasonId: number, endpoint?: "last" | "next") {
+  try {
+    return await getEventsByRounds(tournamentId, seasonId);
+  } catch {
+    if (endpoint) return getPagedSeasonEvents(tournamentId, seasonId, endpoint);
+
+    const [lastEvents, nextEvents] = await Promise.all([
+      getPagedSeasonEvents(tournamentId, seasonId, "last"),
+      getPagedSeasonEvents(tournamentId, seasonId, "next"),
+    ]);
+    const byId = new Map<number, any>();
+    [...lastEvents, ...nextEvents].forEach((event) => {
+      if (typeof event?.id === "number") byId.set(event.id, event);
+    });
+    return Array.from(byId.values());
+  }
 }
 
 function normalizeStatus(event: any) {
@@ -120,6 +219,29 @@ function normalizeStatus(event: any) {
   if (event?.status?.type === "inprogress") return "Live";
   if (event?.status?.type === "notstarted") return "Scheduled";
   return event?.status?.description || "Scheduled";
+}
+
+const scoreNumber = (value: unknown) => (typeof value === "number" ? value : null);
+
+function scorePair(homeScore: any, awayScore: any) {
+  const homePenaltyScore = scoreNumber(homeScore?.penalties);
+  const awayPenaltyScore = scoreNumber(awayScore?.penalties);
+  const mainKeys = ["afterExtraTime", "normaltime", "current"];
+
+  const pickMain = (score: any) => {
+    for (const key of mainKeys) {
+      const value = scoreNumber(score?.[key]);
+      if (value !== null) return value;
+    }
+    return null;
+  };
+
+  return {
+    homeScore: pickMain(homeScore),
+    awayScore: pickMain(awayScore),
+    homePenaltyScore,
+    awayPenaltyScore,
+  };
 }
 
 const periodLabel = (period?: number | null) => {
@@ -150,6 +272,7 @@ const formatFootballMinute = (totalSeconds: number, period?: number | null) => {
 };
 
 function mapEvent(event: any): SofaMatch {
+  const scores = scorePair(event.homeScore, event.awayScore);
   return {
     id: event.id,
     homeTeamId: event.homeTeam?.id || null,
@@ -158,8 +281,10 @@ function mapEvent(event: any): SofaMatch {
     awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
     homeTeamImageUrl: teamImageUrl(event.homeTeam?.id),
     awayTeamImageUrl: teamImageUrl(event.awayTeam?.id),
-    homeScore: typeof event.homeScore?.current === "number" ? event.homeScore.current : null,
-    awayScore: typeof event.awayScore?.current === "number" ? event.awayScore.current : null,
+    homeScore: scores.homeScore,
+    awayScore: scores.awayScore,
+    homePenaltyScore: scores.homePenaltyScore,
+    awayPenaltyScore: scores.awayPenaltyScore,
     status: normalizeStatus(event),
     startTimestamp: event.startTimestamp || 0,
     tournament: event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
@@ -478,12 +603,11 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
     };
   }
 
-  if (action === "matches_last" || action === "matches_next") {
+  if (action === "matches_season" || action === "matches_last" || action === "matches_next") {
     const tournamentId = uniqueTournamentIdFromUrl(String(body.leagueUrl));
     const seasonId = await getCurrentSeasonId(tournamentId);
-    const endpoint = action === "matches_last" ? "last" : "next";
-    const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/${endpoint}/0`);
-    const events = Array.isArray(data?.events) ? data.events : [];
+    const endpoint = action === "matches_last" ? "last" : action === "matches_next" ? "next" : undefined;
+    const events = await getSeasonEvents(tournamentId, seasonId, endpoint);
     return events
       .map(mapEvent)
       .sort((a, b) => (endpoint === "last" ? b.startTimestamp - a.startTimestamp : a.startTimestamp - b.startTimestamp));
@@ -494,22 +618,27 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
     const events = Array.isArray(data?.events) ? data.events : [];
     return events
       .filter((event: any) => event?.status?.type === "inprogress")
-      .map((event: any): SofaLiveMatch => ({
-        id: event.id,
-        homeTeamId: event.homeTeam?.id || null,
-        awayTeamId: event.awayTeam?.id || null,
-        homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
-        awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
-        homeTeamImageUrl: teamImageUrl(event.homeTeam?.id),
-        awayTeamImageUrl: teamImageUrl(event.awayTeam?.id),
-        homeScore: event.homeScore?.current ?? 0,
-        awayScore: event.awayScore?.current ?? 0,
-        status: "Live",
-        ...getLiveClock(event),
-        tournament: event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
-        tournamentId: event.tournament?.uniqueTournament?.id || null,
-        country: eventCountry(event),
-      }));
+      .map((event: any): SofaLiveMatch => {
+        const scores = scorePair(event.homeScore, event.awayScore);
+        return {
+          id: event.id,
+          homeTeamId: event.homeTeam?.id || null,
+          awayTeamId: event.awayTeam?.id || null,
+          homeTeam: event.homeTeam?.name || event.homeTeam?.shortName || "Unknown",
+          awayTeam: event.awayTeam?.name || event.awayTeam?.shortName || "Unknown",
+          homeTeamImageUrl: teamImageUrl(event.homeTeam?.id),
+          awayTeamImageUrl: teamImageUrl(event.awayTeam?.id),
+          homeScore: scores.homeScore ?? event.homeScore?.current ?? 0,
+          awayScore: scores.awayScore ?? event.awayScore?.current ?? 0,
+          homePenaltyScore: scores.homePenaltyScore,
+          awayPenaltyScore: scores.awayPenaltyScore,
+          status: "Live",
+          ...getLiveClock(event),
+          tournament: event.tournament?.uniqueTournament?.name || event.tournament?.name || "Desconhecido",
+          tournamentId: event.tournament?.uniqueTournament?.id || null,
+          country: eventCountry(event),
+        };
+      });
   }
 
   if (action === "today_matches") {
@@ -532,6 +661,8 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
           awayTeamImageUrl: mapped.awayTeamImageUrl,
           homeScore: mapped.homeScore,
           awayScore: mapped.awayScore,
+          homePenaltyScore: mapped.homePenaltyScore,
+          awayPenaltyScore: mapped.awayPenaltyScore,
           status: mapped.status,
           startTimestamp: mapped.startTimestamp,
           time:
@@ -544,6 +675,8 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
                 }),
           tournament: mapped.tournament,
           tournamentId: mapped.tournamentId,
+          roundInfo: mapped.roundInfo,
+          roundName: mapped.roundName,
           country: eventCountry(event),
           venue: mapped.venue,
         };
@@ -674,9 +807,42 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
   throw new Error("Ação sem fallback local");
 }
 
+const EMPTY_RESULT_FALLBACK_ACTIONS = new Set([
+  "matches_last",
+  "matches_next",
+  "matches_season",
+  "today_matches",
+  "standings",
+  "top_players",
+  "team_next_matches",
+]);
+
+const isEmptyDataResult = (result: unknown) => {
+  if (Array.isArray(result)) return result.length === 0;
+  if (result && typeof result === "object" && "teams" in result) {
+    const teams = (result as { teams?: unknown }).teams;
+    return Array.isArray(teams) && teams.length === 0;
+  }
+  return false;
+};
+
+const shouldRetryEmptyWithScraper = (body: Record<string, unknown>, result: unknown) =>
+  import.meta.env.DEV &&
+  EMPTY_RESULT_FALLBACK_ACTIONS.has(String(body.action || "")) &&
+  isEmptyDataResult(result);
+
 async function callSportsData(body: Record<string, unknown>) {
   try {
-    return await callLegacySportsData(body);
+    const legacyResult = await callLegacySportsData(body);
+    if (shouldRetryEmptyWithScraper(body, legacyResult)) {
+      try {
+        const scraperResult = await callScraperFcSportsData(body);
+        if (!isEmptyDataResult(scraperResult)) return scraperResult;
+      } catch {
+        // Keep the old path response when ScraperFC cannot improve an empty result.
+      }
+    }
+    return legacyResult;
   } catch (error) {
     if (import.meta.env.DEV) return callScraperFcSportsData(body);
     throw error;
@@ -709,6 +875,8 @@ export type SofaMatch = {
   awayTeamImageUrl?: string | null;
   homeScore: number | null;
   awayScore: number | null;
+  homePenaltyScore?: number | null;
+  awayPenaltyScore?: number | null;
   status: string;
   startTimestamp: number;
   tournament: string;
@@ -728,6 +896,8 @@ export type SofaLiveMatch = {
   awayTeamImageUrl?: string | null;
   homeScore: number;
   awayScore: number;
+  homePenaltyScore?: number | null;
+  awayPenaltyScore?: number | null;
   status: string;
   minute: string | null;
   period?: string | null;
@@ -770,11 +940,15 @@ export type TodayMatch = {
   awayTeamImageUrl?: string | null;
   homeScore: number | null;
   awayScore: number | null;
+  homePenaltyScore?: number | null;
+  awayPenaltyScore?: number | null;
   status: string;
   startTimestamp?: number;
   time: string | null;
   tournament: string;
   tournamentId?: number | null;
+  roundInfo?: number | null;
+  roundName?: string | null;
   country?: string;
   venue?: string | null;
 };
@@ -857,6 +1031,10 @@ export const sofaScoreService = {
 
   async getNextMatches(leagueUrl: string): Promise<SofaMatch[]> {
     return callSportsData({ action: "matches_next", leagueUrl });
+  },
+
+  async getSeasonMatches(leagueUrl: string): Promise<SofaMatch[]> {
+    return callSportsData({ action: "matches_season", leagueUrl });
   },
 
   async getLiveMatches(): Promise<SofaLiveMatch[]> {

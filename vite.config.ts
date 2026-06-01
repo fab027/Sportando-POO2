@@ -144,6 +144,16 @@ export default defineConfig({
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
         },
       },
+      "/espn-api": {
+        target: "https://site.api.espn.com",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/espn-api/, ""),
+        headers: {
+          Accept: "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+        },
+      },
     },
     hmr: {
       overlay: false,
