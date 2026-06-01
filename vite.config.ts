@@ -16,19 +16,41 @@ function findPythonExecutable() {
   return candidates.find((candidate) => fs.existsSync(candidate)) || "python";
 }
 
+async function isScraperFcBridgeRunning(port: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 800);
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function scraperFcBridgePlugin() {
   let bridge: ChildProcessWithoutNullStreams | null = null;
 
   return {
     name: "scraperfc-bridge",
     apply: "serve" as const,
-    configureServer() {
+    async configureServer() {
       if (process.env.SCRAPERFC_BRIDGE_AUTO === "0") return;
 
       const script = path.resolve(__dirname, "scripts", "scraperfc_bridge.py");
       const python = findPythonExecutable();
+      const port = process.env.SCRAPERFC_PORT || "8787";
+      if (await isScraperFcBridgeRunning(port)) {
+        console.log(`[ScraperFC] Ponte ja ativa em http://127.0.0.1:${port}; reaproveitando processo existente.`);
+        return;
+      }
+
       bridge = spawn(python, [script], {
-        env: { ...process.env, SCRAPERFC_PORT: process.env.SCRAPERFC_PORT || "8787" },
+        env: {
+          ...process.env,
+          SCRAPERFC_PORT: port,
+        },
         stdio: "pipe",
       });
 

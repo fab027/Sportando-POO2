@@ -23,14 +23,43 @@ import {
 
 // Simple in-memory cache (TTL 5 min)
 const cache: Record<string, { data: unknown; ts: number }> = {};
-const TTL = 5 * 60 * 1000;
+const TTL = 15 * 60 * 1000;
 type FetchOptions = { force?: boolean };
+type MatchFetchMode = "window" | "season";
+
+const storageKey = (key: string) => `sportando.cache.${key}`;
+
+function readStoredCache<T>(key: string): { data: T; ts: number } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKey(key)) || "null");
+    if (!parsed || typeof parsed !== "object" || typeof parsed.ts !== "number") return null;
+    return parsed as { data: T; ts: number };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredCache(key: string, data: unknown) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(storageKey(key), JSON.stringify({ data, ts: Date.now() }));
+  } catch {
+    // Cache storage is best-effort.
+  }
+}
 
 function cached<T>(key: string, fn: () => Promise<T>, force = false): Promise<T> {
   const hit = cache[key];
   if (!force && hit && Date.now() - hit.ts < TTL) return Promise.resolve(hit.data as T);
+  const stored = readStoredCache<T>(key);
+  if (!force && stored && Date.now() - stored.ts < TTL) {
+    cache[key] = stored;
+    return Promise.resolve(stored.data);
+  }
   return fn().then((data) => {
     cache[key] = { data, ts: Date.now() };
+    writeStoredCache(key, data);
     return data;
   });
 }
@@ -58,14 +87,15 @@ function saoPauloIsoFromTimestamp(startTimestamp?: number | null) {
 
 // ─── Standings ──────────────────────────────────────────────────────────────
 export function useStandings(leagueUrl: string, tableType: "total" | "home" | "away" = "total") {
-  const [data, setData] = useState<SofaTeamStanding[]>([]);
+  const standingsKey = `standings_${tableType}_${leagueUrl}`;
+  const [data, setData] = useState<SofaTeamStanding[]>(() => readStoredCache<{ teams?: SofaTeamStanding[] }>(standingsKey)?.data?.teams || []);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setStatus("loading");
     try {
-      const res = await cached(`standings_${tableType}_${leagueUrl}`, () =>
+      const res = await cached(standingsKey, () =>
         sofaScoreService.getStandings(leagueUrl, tableType)
       );
       const teams = Array.isArray(res?.teams) ? res.teams : [];
@@ -76,7 +106,7 @@ export function useStandings(leagueUrl: string, tableType: "total" | "home" | "a
       setError(e instanceof Error ? e.message : "Erro ao carregar classificação");
       setStatus("error");
     }
-  }, [leagueUrl, tableType]);
+  }, [leagueUrl, standingsKey, tableType]);
 
   useEffect(() => {
     fetchData();
@@ -86,36 +116,131 @@ export function useStandings(leagueUrl: string, tableType: "total" | "home" | "a
 }
 
 // ─── Matches ─────────────────────────────────────────────────────────────────
-export function useMatches(leagueUrl: string) {
-  const [lastMatches, setLastMatches] = useState<SofaMatch[]>([]);
-  const [nextMatches, setNextMatches] = useState<SofaMatch[]>([]);
+function uniqueMatches(matches: SofaMatch[]) {
+  const byId = new Map<number, SofaMatch>();
+  matches.forEach((match) => {
+    if (typeof match?.id === "number") byId.set(match.id, match);
+  });
+  return Array.from(byId.values());
+}
+
+async function fetchMatchWindow(leagueUrl: string) {
+  const [last, next] = await Promise.all([
+    sofaScoreService.getLastMatches(leagueUrl),
+    sofaScoreService.getNextMatches(leagueUrl),
+  ]);
+  return uniqueMatches([...(Array.isArray(last) ? last : []), ...(Array.isArray(next) ? next : [])]);
+}
+
+function splitMatches(matches: SofaMatch[], leagueUrl: string, includeFallback = false) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const cleanLast = matches
+    .filter((m) => m.startTimestamp && m.startTimestamp < nowSec)
+    .sort((a, b) => b.startTimestamp - a.startTimestamp);
+  const cleanNext = matches
+    .filter((m) => m.startTimestamp && m.startTimestamp >= nowSec - 3600)
+    .sort((a, b) => a.startTimestamp - b.startTimestamp);
+
+  if (!includeFallback || cleanLast.length > 0 || cleanNext.length > 0) {
+    return { last: cleanLast, next: cleanNext, hasData: cleanLast.length > 0 || cleanNext.length > 0 };
+  }
+
+  const fallback = getFallbackMatches(leagueUrl);
+  return {
+    last: fallback.lastMatches,
+    next: fallback.nextMatches,
+    hasData: fallback.lastMatches.length > 0 || fallback.nextMatches.length > 0,
+  };
+}
+
+function getStoredMatchSeed(mode: MatchFetchMode, leagueUrl: string) {
+  const seasonKey = `season_v3_${leagueUrl}`;
+  const windowKey = `window_v2_${leagueUrl}`;
+  const legacySeasonKey = `season_v2_${leagueUrl}`;
+  const legacyWindowKey = `window_v1_${leagueUrl}`;
+  const keys = mode === "season"
+    ? [seasonKey, windowKey, legacySeasonKey, legacyWindowKey]
+    : [windowKey, legacyWindowKey];
+
+  for (const key of keys) {
+    const stored = readStoredCache<SofaMatch[]>(key);
+    if (Array.isArray(stored?.data) && stored.data.length > 0) return stored.data;
+  }
+
+  return [];
+}
+
+export function useMatches(leagueUrl: string, mode: MatchFetchMode = "window") {
+  const seasonCacheKey = `season_v3_${leagueUrl}`;
+  const windowCacheKey = `window_v2_${leagueUrl}`;
+  const [lastMatches, setLastMatches] = useState<SofaMatch[]>(() => splitMatches(getStoredMatchSeed(mode, leagueUrl), leagueUrl).last);
+  const [nextMatches, setNextMatches] = useState<SofaMatch[]>(() => splitMatches(getStoredMatchSeed(mode, leagueUrl), leagueUrl).next);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async (options?: FetchOptions) => {
-    setStatus("loading");
+    let appliedAny = false;
+    setError(null);
+
+    const applyMatches = (raw: SofaMatch[], includeFallback = false, preserveOnEmpty = false) => {
+      const split = splitMatches(Array.isArray(raw) ? raw : [], leagueUrl, includeFallback);
+      if (!split.hasData && preserveOnEmpty) return false;
+      setLastMatches(split.last);
+      setNextMatches(split.next);
+      appliedAny = appliedAny || split.hasData;
+      return split.hasData;
+    };
+
+    const loadWindow = () => cached(windowCacheKey, () => fetchMatchWindow(leagueUrl), options?.force);
+
+    if (mode !== "season") {
+      setStatus("loading");
+      try {
+        applyMatches(await loadWindow(), true);
+        setStatus("success");
+      } catch (e) {
+        applyMatches([], true);
+        setError(e instanceof Error ? e.message : "Erro ao carregar partidas");
+        setStatus("error");
+      }
+      return;
+    }
+
+    const storedSeed = options?.force ? [] : getStoredMatchSeed(mode, leagueUrl);
+    if (storedSeed.length > 0) {
+      applyMatches(storedSeed);
+      setStatus("success");
+    } else {
+      setStatus("loading");
+      try {
+        applyMatches(await loadWindow());
+        setStatus("success");
+      } catch {
+        // The full-season request below can still recover the page.
+      }
+    }
+
     try {
-      const seasonRaw = await cached(`season_v1_${leagueUrl}`, () => sofaScoreService.getSeasonMatches(leagueUrl), options?.force);
-      const seasonMatches = Array.isArray(seasonRaw) ? seasonRaw : [];
-      const nowSec = Math.floor(Date.now() / 1000);
-      const cleanLast = seasonMatches
-        .filter((m) => m.startTimestamp && m.startTimestamp < nowSec)
-        .sort((a, b) => b.startTimestamp - a.startTimestamp);
-      const cleanNext = seasonMatches
-        .filter((m) => m.startTimestamp && m.startTimestamp >= nowSec - 3600)
-        .sort((a, b) => a.startTimestamp - b.startTimestamp);
-      const fallback = getFallbackMatches(leagueUrl);
-      setLastMatches(cleanLast.length > 0 ? cleanLast : fallback.lastMatches);
-      setNextMatches(cleanNext.length > 0 ? cleanNext : fallback.nextMatches);
+      const seasonMatches = await cached(seasonCacheKey, () => sofaScoreService.getSeasonMatches(leagueUrl), options?.force);
+      applyMatches(seasonMatches, !appliedAny, appliedAny);
       setStatus("success");
     } catch (e) {
-      const fallback = getFallbackMatches(leagueUrl);
-      setLastMatches(fallback.lastMatches);
-      setNextMatches(fallback.nextMatches);
-      setError(e instanceof Error ? e.message : "Erro ao carregar partidas");
-      setStatus("error");
+      if (appliedAny) {
+        setError(e instanceof Error ? e.message : "Erro ao carregar temporada completa");
+        setStatus("success");
+        return;
+      }
+
+      try {
+        applyMatches(await loadWindow(), true);
+        setStatus("success");
+      } catch (windowError) {
+        applyMatches([], true);
+        setError(windowError instanceof Error ? windowError.message : "Erro ao carregar partidas");
+        setStatus("error");
+      }
     }
-  }, [leagueUrl]);
+  }, [leagueUrl, mode, seasonCacheKey, windowCacheKey]);
 
   useEffect(() => {
     fetchData();
@@ -166,13 +291,13 @@ export function useLiveMatches(pollIntervalMs = 30_000) {
 
 // ─── Today Matches ───────────────────────────────────────────────────────────
 export function useTodayMatches() {
-  const [data, setData] = useState<TodayMatch[]>([]);
+  const [data, setData] = useState<TodayMatch[]>(() => readStoredCache<TodayMatch[]>("today_matches_v5")?.data || []);
   const [status, setStatus] = useState<Status>("idle");
 
   const fetchData = useCallback(async (options?: FetchOptions) => {
     setStatus("loading");
     try {
-      const res = await cached("today_matches_v4", () => sofaScoreService.getTodayMatches(), options?.force);
+      const res = await cached("today_matches_v5", () => sofaScoreService.getTodayMatches(), options?.force);
       const todayIso = todayLocalIso();
       const matches = Array.isArray(res)
         ? res.filter((match) => saoPauloIsoFromTimestamp(match.startTimestamp) === todayIso)
@@ -194,7 +319,11 @@ export function useTodayMatches() {
 
 // ─── Player Search ────────────────────────────────────────────────────────────
 export function useTopPlayers(leagueUrl: string, metric: "goals" | "assists") {
-  const [data, setData] = useState<SofaTopPlayer[]>([]);
+  const topPlayersKey = `top_players_v3_${leagueUrl}_${metric}`;
+  const [data, setData] = useState<SofaTopPlayer[]>(() => {
+    const stored = readStoredCache<SofaTopPlayer[]>(topPlayersKey)?.data;
+    return Array.isArray(stored) ? stored : [];
+  });
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -202,7 +331,7 @@ export function useTopPlayers(leagueUrl: string, metric: "goals" | "assists") {
     setStatus("loading");
     try {
       const res = await cached(
-        `top_players_v1_${leagueUrl}_${metric}`,
+        topPlayersKey,
         () => sofaScoreService.getTopPlayers(leagueUrl, metric),
         options?.force
       );
@@ -213,7 +342,7 @@ export function useTopPlayers(leagueUrl: string, metric: "goals" | "assists") {
       setError(e instanceof Error ? e.message : "Erro ao carregar ranking de jogadores");
       setStatus("error");
     }
-  }, [leagueUrl, metric]);
+  }, [leagueUrl, metric, topPlayersKey]);
 
   useEffect(() => {
     fetchData();

@@ -453,22 +453,22 @@ const MatchesPage = () => {
   const [selectedMatch, setSelectedMatch] = useState<MatchListItem | null>(null);
   const scoreSnapshots = useRef<Record<number, ScoreSnapshot>>({});
 
-  const { lastMatches, nextMatches, allMatches, status, error, refetch } = useMatches(league.sofascoreUrl);
+  const { lastMatches, nextMatches, allMatches, status, error, refetch } = useMatches(league.sofascoreUrl, "season");
   const { data: todayMatches, status: todayStatus, refetch: refetchToday } = useTodayMatches();
   const { data: liveMatches, status: liveStatus, refetch: refetchLive } = useLiveMatches();
-
-  const isLoading =
-    tab === "league"
-      ? status === "loading" || todayStatus === "loading" || liveStatus === "loading"
-      : tab === "today"
-        ? todayStatus === "loading"
-        : liveStatus === "loading";
 
   const leagueMatches = useMemo(() => {
     const leagueToday = todayMatches.filter((match) => isSameTournament(match, league)).map(todayToMatch);
     const leagueLive = liveMatches.filter((match) => isSameTournament(match, league)).map(liveToMatch);
     return mergeMatches([...(allMatches as MatchListItem[]), ...leagueToday, ...leagueLive]);
   }, [allMatches, todayMatches, liveMatches, league]);
+
+  const isLoading =
+    tab === "league"
+      ? status === "loading" && leagueMatches.length === 0
+      : tab === "today"
+        ? todayStatus === "loading" && todayMatches.length === 0
+        : liveStatus === "loading" && liveMatches.length === 0;
 
   const leagueMatchCounts = useMemo(
     () => ({

@@ -630,15 +630,18 @@ const PlayerRanking = ({
   metricLabel: string;
   players: SofaTopPlayer[];
   loading: boolean;
-}) => (
+}) => {
+  const safePlayers = Array.isArray(players) ? players : [];
+
+  return (
   <CollapsibleCard icon={icon} title={title} subtitle="Ranking da temporada selecionada" defaultOpen={false}>
-    {loading && players.length === 0 ? (
+    {loading && safePlayers.length === 0 ? (
       <p className="text-sm text-muted-foreground">Carregando ranking...</p>
-    ) : players.length === 0 ? (
+    ) : safePlayers.length === 0 ? (
       <p className="text-sm text-muted-foreground">Nenhum jogador encontrado para esta competicao.</p>
     ) : (
       <div className="space-y-1.5">
-        {players.slice(0, 8).map((player, index) => (
+        {safePlayers.slice(0, 8).map((player, index) => (
           <div key={player.id} className="grid grid-cols-[1.75rem_2.25rem_1fr_auto] items-center gap-2 rounded-lg bg-secondary/30 px-3 py-1.5">
             <span className="font-mono text-xs text-muted-foreground">{index + 1}</span>
             {player.imageUrl ? (
@@ -669,7 +672,8 @@ const PlayerRanking = ({
       </div>
     )}
   </CollapsibleCard>
-);
+  );
+};
 
 const Dashboard = () => {
   const { league } = useSport();
@@ -1114,7 +1118,8 @@ const Dashboard = () => {
   const liveCountryLabel = countrySelectionLabel(selectedLiveCountries);
   const todayCountryLabel = countrySelectionLabel(selectedTodayCountries);
 
-  const isLoading = matchesStatus === "loading" || todayStatus === "loading";
+  const hasDashboardMatchData = lastMatches.length > 0 || nextMatches.length > 0 || todayMatches.length > 0;
+  const isLoading = !hasDashboardMatchData && (matchesStatus === "loading" || todayStatus === "loading");
   const isOffline = matchesStatus === "error" || todayStatus === "error";
 
   const refreshAll = async () => {

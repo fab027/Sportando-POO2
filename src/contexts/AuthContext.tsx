@@ -190,8 +190,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     // 2) THEN check existing session
-    supabase.auth
-      .getSession()
+    withAuthTimeout(supabase.auth.getSession())
       .then(({ data: { session: existing } }) => {
         if (existing) {
           setSession(existing);

@@ -6,12 +6,16 @@ const SOFASCORE_PROXY_URL = "/sofascore-api";
 const SCRAPERFC_DATA_URL = "/scraperfc-api/sports-data";
 const SCRAPERFC_RAW_URL = "/scraperfc-api/sofascore";
 const SPORTS_DATA_TIMEOUT_MS = 4000;
-const SCRAPERFC_TIMEOUT_MS = 25000;
+const SOFASCORE_DIRECT_TIMEOUT_MS = 7000;
+const SCRAPERFC_TIMEOUT_MS = 20000;
+const SOFASCORE_DIRECT_COOLDOWN_MS = 60_000;
 const SCRAPERFC_COOLDOWN_MS = 60_000;
-const SEASON_EVENTS_PAGE_LIMIT = 20;
+const SEASON_EVENTS_PAGE_LIMIT = 7;
+const WINDOW_EVENTS_PAGE_LIMIT = 2;
 const SEASON_ROUND_BATCH_SIZE = 6;
 const scraperFcUnavailableUntilByScope = new Map<string, number>();
 const currentSeasonIdCache = new Map<number, Promise<number>>();
+let sofaScoreDirectUnavailableUntil = 0;
 
 const teamImageUrl = (teamId?: number | null) =>
   teamId ? `https://api.sofascore.app/api/v1/team/${teamId}/image` : null;
@@ -34,12 +38,28 @@ const markScraperScopeUnavailable = (scope: string) => {
 export async function fetchSofaScoreJson(path: string) {
   const scraperScope = `raw:${path}`;
   try {
-    const res = await fetch(`${SOFASCORE_PROXY_URL}${path}`, {
-      headers: { Accept: "application/json" },
-    });
-    if (!res.ok) throw new Error(`SofaScore HTTP ${res.status}`);
-    return res.json();
+    if (Date.now() >= sofaScoreDirectUnavailableUntil) {
+      sofaScoreDirectUnavailableUntil = Date.now() + 5_000;
+      const res = await fetchWithTimeout(
+        `${SOFASCORE_PROXY_URL}${path}`,
+        { headers: { Accept: "application/json" } },
+        SOFASCORE_DIRECT_TIMEOUT_MS
+      );
+      if (!res.ok) {
+        if (res.status === 403 || res.status === 429 || res.status >= 500) {
+          sofaScoreDirectUnavailableUntil = Date.now() + SOFASCORE_DIRECT_COOLDOWN_MS;
+        }
+        throw new Error(`SofaScore HTTP ${res.status}`);
+      }
+      sofaScoreDirectUnavailableUntil = 0;
+      return res.json();
+    }
+
+    throw new Error("SofaScore direto em cooldown");
   } catch (directError) {
+    if (directError instanceof DOMException && directError.name === "AbortError") {
+      sofaScoreDirectUnavailableUntil = Date.now() + SOFASCORE_DIRECT_COOLDOWN_MS;
+    }
     if (!import.meta.env.DEV || scraperScopeUnavailable(scraperScope)) {
       throw directError;
     }
@@ -180,11 +200,16 @@ async function getEventsByRounds(tournamentId: number, seasonId: number) {
   return Array.from(byId.values());
 }
 
-async function getPagedSeasonEvents(tournamentId: number, seasonId: number, endpoint: "last" | "next") {
+async function getPagedSeasonEvents(tournamentId: number, seasonId: number, endpoint: "last" | "next", pageLimit = SEASON_EVENTS_PAGE_LIMIT) {
   const byId = new Map<number, any>();
 
-  for (let page = 0; page < SEASON_EVENTS_PAGE_LIMIT; page += 1) {
-    const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/${endpoint}/${page}`);
+  for (let page = 0; page < pageLimit; page += 1) {
+    let data: any;
+    try {
+      data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/${endpoint}/${page}`);
+    } catch {
+      break;
+    }
     const events = Array.isArray(data?.events) ? data.events : [];
     if (events.length === 0) break;
 
@@ -197,21 +222,23 @@ async function getPagedSeasonEvents(tournamentId: number, seasonId: number, endp
 }
 
 async function getSeasonEvents(tournamentId: number, seasonId: number, endpoint?: "last" | "next") {
-  try {
-    return await getEventsByRounds(tournamentId, seasonId);
-  } catch {
-    if (endpoint) return getPagedSeasonEvents(tournamentId, seasonId, endpoint);
+  if (endpoint) return getPagedSeasonEvents(tournamentId, seasonId, endpoint, SEASON_EVENTS_PAGE_LIMIT);
 
+  try {
     const [lastEvents, nextEvents] = await Promise.all([
-      getPagedSeasonEvents(tournamentId, seasonId, "last"),
-      getPagedSeasonEvents(tournamentId, seasonId, "next"),
+      getPagedSeasonEvents(tournamentId, seasonId, "last", SEASON_EVENTS_PAGE_LIMIT),
+      getPagedSeasonEvents(tournamentId, seasonId, "next", SEASON_EVENTS_PAGE_LIMIT),
     ]);
     const byId = new Map<number, any>();
     [...lastEvents, ...nextEvents].forEach((event) => {
       if (typeof event?.id === "number") byId.set(event.id, event);
     });
-    return Array.from(byId.values());
+    if (byId.size > 0) return Array.from(byId.values());
+  } catch {
+    // If the paged endpoints change, rounds are still a viable fallback.
   }
+
+  return getEventsByRounds(tournamentId, seasonId);
 }
 
 function normalizeStatus(event: any) {
@@ -607,7 +634,9 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
     const tournamentId = uniqueTournamentIdFromUrl(String(body.leagueUrl));
     const seasonId = await getCurrentSeasonId(tournamentId);
     const endpoint = action === "matches_last" ? "last" : action === "matches_next" ? "next" : undefined;
-    const events = await getSeasonEvents(tournamentId, seasonId, endpoint);
+    const events = endpoint
+      ? await getPagedSeasonEvents(tournamentId, seasonId, endpoint, WINDOW_EVENTS_PAGE_LIMIT)
+      : await getSeasonEvents(tournamentId, seasonId);
     return events
       .map(mapEvent)
       .sort((a, b) => (endpoint === "last" ? b.startTimestamp - a.startTimestamp : a.startTimestamp - b.startTimestamp));

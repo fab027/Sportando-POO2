@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -15,6 +16,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -37,13 +39,18 @@ else:
 
 API_PREFIX = "https://api.sofascore.com/api/v1"
 DEFAULT_PORT = 8787
-CACHE_TTL_SECONDS = 120
-SEASON_EVENTS_PAGE_LIMIT = 20
+CACHE_TTL_SECONDS = 900
+LIVE_CACHE_TTL_SECONDS = 15
+TODAY_CACHE_TTL_SECONDS = 90
+WINDOW_CACHE_TTL_SECONDS = 600
+SEASON_EVENTS_PAGE_LIMIT = 7
+WINDOW_EVENTS_PAGE_LIMIT = 2
 SEASON_ROUND_BATCH_SIZE = 6
 _CACHE: dict[str, tuple[float, Any]] = {}
 _SCRAPER = None
 _SOFA_LOCK = Lock()
 _CURRENT_SEASON_ID_CACHE: dict[int, int] = {}
+_CACHE_DIR = Path(os.environ.get("SCRAPERFC_CACHE_DIR", Path.cwd() / ".cache" / "scraperfc"))
 
 
 def _scraper():
@@ -81,20 +88,63 @@ def _cache_key(path: str) -> str:
     return path
 
 
+def _cache_ttl_for_path(path: str) -> int:
+    if "/events/live" in path:
+        return LIVE_CACHE_TTL_SECONDS
+    if "/scheduled-events/" in path:
+        return TODAY_CACHE_TTL_SECONDS
+    if "/events/last/" in path or "/events/next/" in path:
+        return WINDOW_CACHE_TTL_SECONDS
+    return CACHE_TTL_SECONDS
+
+
+def _cache_file(path: str) -> Path:
+    digest = hashlib.sha256(path.encode("utf-8")).hexdigest()
+    return _CACHE_DIR / f"{digest}.json"
+
+
+def _read_disk_cache(path: str, ttl: int) -> Any | None:
+    try:
+        cache_file = _cache_file(path)
+        if not cache_file.exists() or time.time() - cache_file.stat().st_mtime >= ttl:
+            return None
+        return json.loads(cache_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _write_disk_cache(path: str, data: Any):
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _cache_file(path).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def sofa_json(path: str) -> Any:
     if not path.startswith("/"):
         path = f"/{path}"
 
     key = _cache_key(path)
+    ttl = _cache_ttl_for_path(path)
     cached = _CACHE.get(key)
-    if cached and time.time() - cached[0] < CACHE_TTL_SECONDS:
+    if cached and time.time() - cached[0] < ttl:
         return cached[1]
+
+    disk_cached = _read_disk_cache(path, ttl)
+    if disk_cached is not None:
+        _CACHE[key] = (time.time(), disk_cached)
+        return disk_cached
 
     url = f"{API_PREFIX}{path}"
     with _SOFA_LOCK:
         cached = _CACHE.get(key)
-        if cached and time.time() - cached[0] < CACHE_TTL_SECONDS:
+        if cached and time.time() - cached[0] < ttl:
             return cached[1]
+        disk_cached = _read_disk_cache(path, ttl)
+        if disk_cached is not None:
+            _CACHE[key] = (time.time(), disk_cached)
+            return disk_cached
 
         errors: list[str] = []
         data = None
@@ -142,6 +192,7 @@ def sofa_json(path: str) -> Any:
             raise RuntimeError("; ".join(errors) or "SofaScore fetch failed")
 
         _CACHE[key] = (time.time(), data)
+        _write_disk_cache(path, data)
         return data
 
 
@@ -226,10 +277,13 @@ def season_events_by_rounds(tournament_id: int, season_id: int) -> list[dict[str
     return list(events_by_id.values())
 
 
-def paged_season_events(tournament_id: int, season_id: int, endpoint: str) -> list[dict[str, Any]]:
+def paged_season_events(tournament_id: int, season_id: int, endpoint: str, page_limit: int = SEASON_EVENTS_PAGE_LIMIT) -> list[dict[str, Any]]:
     events_by_id: dict[int, dict[str, Any]] = {}
-    for page in range(SEASON_EVENTS_PAGE_LIMIT):
-        data = sofa_json(f"/unique-tournament/{tournament_id}/season/{season_id}/events/{endpoint}/{page}")
+    for page in range(page_limit):
+        try:
+            data = sofa_json(f"/unique-tournament/{tournament_id}/season/{season_id}/events/{endpoint}/{page}")
+        except Exception:
+            break
         events = data.get("events") if isinstance(data, dict) else []
         if not events:
             break
@@ -241,18 +295,21 @@ def paged_season_events(tournament_id: int, season_id: int, endpoint: str) -> li
 
 
 def season_events(tournament_id: int, season_id: int, endpoint: str | None = None) -> list[dict[str, Any]]:
-    try:
-        return season_events_by_rounds(tournament_id, season_id)
-    except Exception:
-        if endpoint:
-            return paged_season_events(tournament_id, season_id, endpoint)
+    if endpoint:
+        return paged_season_events(tournament_id, season_id, endpoint, SEASON_EVENTS_PAGE_LIMIT)
 
+    try:
         events_by_id: dict[int, dict[str, Any]] = {}
-        for event in [*paged_season_events(tournament_id, season_id, "last"), *paged_season_events(tournament_id, season_id, "next")]:
+        for event in [*paged_season_events(tournament_id, season_id, "last", SEASON_EVENTS_PAGE_LIMIT), *paged_season_events(tournament_id, season_id, "next", SEASON_EVENTS_PAGE_LIMIT)]:
             event_id = event.get("id") if isinstance(event, dict) else None
             if isinstance(event_id, int):
                 events_by_id[event_id] = event
-        return list(events_by_id.values())
+        if events_by_id:
+            return list(events_by_id.values())
+    except Exception:
+        pass
+
+    return season_events_by_rounds(tournament_id, season_id)
 
 
 def team_image_url(team_id: Any) -> str | None:
@@ -561,7 +618,8 @@ def handle_action(body: dict[str, Any]) -> Any:
         tournament_id = unique_tournament_id_from_url(str(body.get("leagueUrl") or ""))
         season_id = get_current_season_id(tournament_id)
         endpoint = "last" if action == "matches_last" else "next" if action == "matches_next" else None
-        events = [map_event(event) for event in season_events(tournament_id, season_id, endpoint)]
+        raw_events = paged_season_events(tournament_id, season_id, endpoint, WINDOW_EVENTS_PAGE_LIMIT) if endpoint else season_events(tournament_id, season_id)
+        events = [map_event(event) for event in raw_events]
         return sorted(events, key=lambda item: item["startTimestamp"], reverse=endpoint == "last")
 
     if action == "live":
@@ -625,7 +683,8 @@ def handle_action(body: dict[str, Any]) -> Any:
         season_id = get_current_season_id(tournament_id)
         metric = str(body.get("metric") or "goals")
         data = sofa_json(f"/unique-tournament/{tournament_id}/season/{season_id}/top-players/overall")
-        players = ((data.get("topPlayers") or {}).get(metric) or [])[:12]
+        metric_players = (data.get("topPlayers") or {}).get(metric) if isinstance(data, dict) else []
+        players = metric_players[:12] if isinstance(metric_players, list) else []
         return [
             {
                 "id": (item.get("player") or {}).get("id") or item.get("id"),

@@ -228,7 +228,8 @@ const squadSchema = {
 };
 
 const SOFASCORE_BASE_URL = "https://www.sofascore.com/api/v1";
-const SEASON_EVENTS_PAGE_LIMIT = 20;
+const SEASON_EVENTS_PAGE_LIMIT = 7;
+const WINDOW_EVENTS_PAGE_LIMIT = 2;
 const SEASON_ROUND_BATCH_SIZE = 6;
 const sofaFetch = async (path: string): Promise<any> => {
   const res = await fetch(`${SOFASCORE_BASE_URL}${path}`, {
@@ -302,10 +303,15 @@ const getEventsByRounds = async (tournamentId: number, seasonId: number) => {
   return Array.from(byId.values());
 };
 
-const getPagedSeasonEvents = async (tournamentId: number, seasonId: number, endpoint: "last" | "next") => {
+const getPagedSeasonEvents = async (tournamentId: number, seasonId: number, endpoint: "last" | "next", pageLimit = SEASON_EVENTS_PAGE_LIMIT) => {
   const byId = new Map<number, any>();
-  for (let page = 0; page < SEASON_EVENTS_PAGE_LIMIT; page += 1) {
-    const data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/${endpoint}/${page}`);
+  for (let page = 0; page < pageLimit; page += 1) {
+    let data: any;
+    try {
+      data = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/${endpoint}/${page}`);
+    } catch {
+      break;
+    }
     const events = Array.isArray(data?.events) ? data.events : [];
     if (!events.length) break;
     events.forEach((event: any) => {
@@ -316,21 +322,23 @@ const getPagedSeasonEvents = async (tournamentId: number, seasonId: number, endp
 };
 
 const getSeasonEvents = async (tournamentId: number, seasonId: number, endpoint?: "last" | "next") => {
-  try {
-    return await getEventsByRounds(tournamentId, seasonId);
-  } catch {
-    if (endpoint) return getPagedSeasonEvents(tournamentId, seasonId, endpoint);
+  if (endpoint) return getPagedSeasonEvents(tournamentId, seasonId, endpoint, SEASON_EVENTS_PAGE_LIMIT);
 
+  try {
     const [lastEvents, nextEvents] = await Promise.all([
-      getPagedSeasonEvents(tournamentId, seasonId, "last"),
-      getPagedSeasonEvents(tournamentId, seasonId, "next"),
+      getPagedSeasonEvents(tournamentId, seasonId, "last", SEASON_EVENTS_PAGE_LIMIT),
+      getPagedSeasonEvents(tournamentId, seasonId, "next", SEASON_EVENTS_PAGE_LIMIT),
     ]);
     const byId = new Map<number, any>();
     [...lastEvents, ...nextEvents].forEach((event) => {
       if (typeof event?.id === "number") byId.set(event.id, event);
     });
-    return Array.from(byId.values());
+    if (byId.size > 0) return Array.from(byId.values());
+  } catch {
+    // If the paged endpoints change, rounds are still a viable fallback.
   }
+
+  return getEventsByRounds(tournamentId, seasonId);
 };
 
 const normalizeEventStatus = (event: any): string => {
@@ -700,7 +708,9 @@ serve(async (req) => {
       const tournamentId = uniqueTournamentIdFromUrl(leagueUrl);
       const seasonId = await getCurrentSeasonId(tournamentId);
       const endpoint = action === "matches_last" ? "last" : action === "matches_next" ? "next" : undefined;
-      const events = await getSeasonEvents(tournamentId, seasonId, endpoint);
+      const events = endpoint
+        ? await getPagedSeasonEvents(tournamentId, seasonId, endpoint, WINDOW_EVENTS_PAGE_LIMIT)
+        : await getSeasonEvents(tournamentId, seasonId);
       result = events
         .map(mapSofaEvent)
         .sort((a: any, b: any) =>
