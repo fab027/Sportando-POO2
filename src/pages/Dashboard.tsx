@@ -587,8 +587,13 @@ const LiveMatchCard = ({
         <span className="rounded-md bg-destructive/10 px-2 py-0.5 font-display text-sm text-destructive">
           {match.homeScore} - {match.awayScore}
         </span>
+        <span
+          className="shrink-0 rounded-md bg-sport/10 px-2 py-0.5 font-display text-xs font-semibold text-sport"
+          title="Tempo de jogo"
+        >
+          {clock}
+        </span>
         <LiveTeamAlertButton side="away" teamName={match.awayTeam} alert={alert} onClick={(side) => onQuickSelectSide(match, side)} />
-        <span className="text-xs text-muted-foreground">{clock}</span>
       </div>
     </div>
   );

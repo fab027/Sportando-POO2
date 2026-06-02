@@ -457,6 +457,77 @@ def map_event(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def period_label(period: int | None) -> str | None:
+    if period == 1:
+        return "1T"
+    if period == 2:
+        return "2T"
+    return None
+
+
+def period_from_text(value: str) -> int | None:
+    text = value.lower()
+    if re.search(r"(^|\s)(2t|2o tempo|2nd half|second half|segundo tempo)(\s|$)", text):
+        return 2
+    if re.search(r"(^|\s)(1t|1o tempo|1st half|first half|primeiro tempo)(\s|$)", text):
+        return 1
+    return None
+
+
+def is_halftime_text(value: str) -> bool:
+    return bool(re.search(r"(^|\s)(ht|half[-\s]?time|interval|intervalo|break|pause)(\s|$)", value.lower()))
+
+
+def format_football_minute(total_seconds: int, period: int | None = None) -> str:
+    safe_seconds = max(0, total_seconds)
+    minute = max(1, safe_seconds // 60 + 1)
+    regular_limit = 45 if period == 1 else 90 if period == 2 or minute > 45 else 45
+    regular_seconds = regular_limit * 60
+    if safe_seconds > regular_seconds:
+        return f"{regular_limit}+{(safe_seconds - regular_seconds) // 60 + 1}'"
+    return f"{minute}'"
+
+
+def get_live_clock(event: dict[str, Any]) -> dict[str, str | None]:
+    description = str((event.get("status") or {}).get("description") or "").strip()
+    if is_halftime_text(description):
+        return {"minute": None, "period": "Intervalo"}
+
+    time_data = event.get("time") or {}
+    status_time = event.get("statusTime") or {}
+    timestamp = int(
+        time_data.get("currentPeriodStartTimestamp")
+        or status_time.get("currentPeriodStartTimestamp")
+        or status_time.get("timestamp")
+        or time_data.get("timestamp")
+        or 0
+    )
+    period_number = int(time_data.get("period") or status_time.get("period") or 0)
+    initial_from_api = int(time_data.get("initial") or status_time.get("initial") or 0)
+    played = int(time_data.get("played") or status_time.get("played") or 0)
+    extra = int(time_data.get("extra") or status_time.get("extra") or 0)
+    inferred_period = (
+        period_number
+        or period_from_text(description)
+        or (2 if initial_from_api >= 45 * 60 else 1 if (event.get("status") or {}).get("type") == "inprogress" else None)
+    )
+    period = period_label(inferred_period) or description or None
+
+    if played > 0:
+        total = initial_from_api + played + extra if initial_from_api > 0 and played <= 60 * 60 else played + extra
+        period_from_played = inferred_period or (2 if total > 45 * 60 else 1)
+        return {"minute": format_football_minute(total, period_from_played), "period": period_label(period_from_played) or period}
+
+    if not timestamp:
+        return {"minute": None, "period": period}
+
+    elapsed = max(0, int(time.time()) - timestamp)
+    initial = initial_from_api or (45 * 60 if inferred_period == 2 else 0)
+    total = initial + elapsed
+    period_from_elapsed = inferred_period or (2 if total > 45 * 60 else 1)
+    return {"minute": format_football_minute(total, period_from_elapsed), "period": period_label(period_from_elapsed) or period}
+
+
 def event_country(event: dict[str, Any]) -> str:
     tournament = event.get("tournament") or {}
     unique = tournament.get("uniqueTournament") or {}
@@ -722,8 +793,7 @@ def handle_action(body: dict[str, Any]) -> Any:
                 "homeScore": score_pair(event.get("homeScore") or {}, event.get("awayScore") or {})["homeScore"] or 0,
                 "awayScore": score_pair(event.get("homeScore") or {}, event.get("awayScore") or {})["awayScore"] or 0,
                 "status": "Live",
-                "minute": None,
-                "period": (event.get("status") or {}).get("description"),
+                **get_live_clock(event),
                 "country": event_country(event),
             }
             for event in data.get("events") or []

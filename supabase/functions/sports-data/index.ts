@@ -419,10 +419,19 @@ const mapGoalIncident = (incident: any) => ({
   incidentClass: incident?.incidentClass || null,
 });
 
+const isHalftimeText = (value: string) =>
+  /(^|\s)(ht|half[-\s]?time|interval|intervalo|break|pause)(\s|$)/i.test(value);
+
+const periodFromText = (value: string) => {
+  const text = value.toLowerCase();
+  if (/(^|\s)(2t|2o tempo|2nd half|second half|segundo tempo)(\s|$)/.test(text)) return 2;
+  if (/(^|\s)(1t|1o tempo|1st half|first half|primeiro tempo)(\s|$)/.test(text)) return 1;
+  return null;
+};
+
 const getLiveMinute = (event: any): string | null => {
   const description = String(event?.status?.description || "").trim();
-  const normalizedDescription = description.toLowerCase();
-  if (normalizedDescription.includes("half") || normalizedDescription.includes("interval")) return null;
+  if (isHalftimeText(description)) return null;
 
   const time = event?.time || {};
   const statusTime = event?.statusTime || {};
@@ -434,8 +443,11 @@ const getLiveMinute = (event: any): string | null => {
       0
   );
   const periodNumber = Number(time?.period ?? statusTime?.period ?? 0);
-  const inferredPeriod = periodNumber || (Number(time?.initial ?? statusTime?.initial ?? 0) >= 45 * 60 ? 2 : 1);
   const initialFromApi = Number(time?.initial ?? statusTime?.initial ?? 0);
+  const inferredPeriod =
+    periodNumber ||
+    periodFromText(description) ||
+    (initialFromApi >= 45 * 60 ? 2 : event?.status?.type === "inprogress" ? 1 : null);
   const initial = initialFromApi || (inferredPeriod === 2 ? 45 * 60 : 0);
   const max = Number(time?.max ?? statusTime?.max ?? 0) || (inferredPeriod === 2 ? 90 * 60 : 45 * 60);
   if (!timestamp) return null;
@@ -449,15 +461,16 @@ const getLiveMinute = (event: any): string | null => {
 };
 
 const getLivePeriod = (event: any): string | null => {
-  const description = String(event?.status?.description || "").toLowerCase();
-  if (description.includes("half") || description.includes("interval")) return "Intervalo";
+  const description = String(event?.status?.description || "");
+  if (isHalftimeText(description)) return "Intervalo";
   const time = event?.time || {};
   const statusTime = event?.statusTime || {};
   const periodNumber = Number(time?.period ?? statusTime?.period ?? 0);
   const initialFromApi = Number(time?.initial ?? statusTime?.initial ?? 0);
   const initial = initialFromApi || (periodNumber === 2 ? 45 * 60 : 0);
-  if (periodNumber === 2 || initial >= 45 * 60) return "2o tempo";
-  if (periodNumber === 1 || event?.status?.type === "inprogress") return "1o tempo";
+  const inferredPeriod = periodNumber || periodFromText(description);
+  if (inferredPeriod === 2 || initial >= 45 * 60) return "2o tempo";
+  if (inferredPeriod === 1 || event?.status?.type === "inprogress") return "1o tempo";
   return event?.status?.description || null;
 };
 
