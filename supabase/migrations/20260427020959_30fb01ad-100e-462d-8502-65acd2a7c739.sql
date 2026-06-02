@@ -48,7 +48,7 @@ CREATE POLICY "Admins can delete roles"
 
 -- ============ 3. Favoritos ============
 CREATE TYPE public.favorite_type AS ENUM ('atleta', 'equipe');
-CREATE TYPE public.sport_kind AS ENUM ('football', 'basketball');
+CREATE TYPE public.sport_kind AS ENUM ('football');
 
 CREATE TABLE public.favorites (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,

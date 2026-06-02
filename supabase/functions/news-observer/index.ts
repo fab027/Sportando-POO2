@@ -196,11 +196,10 @@ const directNewsItem = (
 
 const getKnownSourceFetchUrl = (source: NewsSource, sport: string) => {
   const domain = normalizeDomain(source.url);
-  const isBasketball = sport === "basketball";
 
   if (domain.endsWith("lance.com.br")) return "https://www.lance.com.br/";
-  if (domain.endsWith("ge.globo.com")) return `https://ge.globo.com/${isBasketball ? "basquete" : "futebol"}/`;
-  if (domain.endsWith("espn.com.br")) return `https://www.espn.com.br/${isBasketball ? "nba" : "futebol"}/`;
+  if (domain.endsWith("ge.globo.com")) return "https://ge.globo.com/futebol/";
+  if (domain.endsWith("espn.com.br")) return "https://www.espn.com.br/futebol/";
 
   return "";
 };
@@ -462,13 +461,10 @@ const fetchDirectSiteNews = async (source: NewsSource, sport: string) => {
 
 const fetchEspnApiNews = async (source: NewsSource, sport: string) => {
   if (!normalizeDomain(source.url).endsWith("espn.com.br")) return [];
-  const paths =
-    sport === "basketball"
-      ? ["https://site.api.espn.com/apis/site/v2/sports/basketball/nba/news?limit=50&region=br&lang=pt"]
-      : [
-          "https://site.api.espn.com/apis/site/v2/sports/soccer/all/news?limit=50&region=br&lang=pt",
-          "https://site.api.espn.com/apis/site/v2/sports/soccer/bra.1/news?limit=50&region=br&lang=pt",
-        ];
+  const paths = [
+    "https://site.api.espn.com/apis/site/v2/sports/soccer/all/news?limit=50&region=br&lang=pt",
+    "https://site.api.espn.com/apis/site/v2/sports/soccer/bra.1/news?limit=50&region=br&lang=pt",
+  ];
 
   const batches = await Promise.allSettled(
     paths.map(async (path) => {

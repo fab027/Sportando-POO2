@@ -691,7 +691,7 @@ const MatchesPage = () => {
           const st = statusConfig(m.status);
           return (
             <div
-              key={m.id}
+              key={`${m.id}-today`}
               role="button"
               tabIndex={0}
               onClick={() => setSelectedMatch(todayToMatch(m))}
@@ -738,7 +738,7 @@ const MatchesPage = () => {
         )}
         {tab === "live" && filteredLive.map((m) => (
           <div
-            key={m.id}
+            key={`${m.id}-live`}
             role="button"
             tabIndex={0}
             onClick={() => setSelectedMatch(liveToMatch(m))}

@@ -1,6 +1,6 @@
 # Sportando
 
-Plataforma web para acompanhar dados, estatisticas e previsoes de esportes em tempo real. Permite gerenciar times/atletas favoritos, visualizar partidas, ver noticias e conversar com IA sobre analises esportivas e dados diversos sobre Futebol/Basquete.
+Plataforma web para acompanhar dados, estatisticas e previsoes de futebol em tempo real. Permite gerenciar times/atletas favoritos, visualizar partidas, ver noticias e conversar com IA sobre analises e dados de futebol.
 
 ## Tecnologias
 

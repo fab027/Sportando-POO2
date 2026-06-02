@@ -7,7 +7,7 @@ interface Favorite {
   tipo: "atleta" | "equipe";
   referenciaId: string;
   nome: string;
-  esporte: "football" | "basketball";
+  esporte: "football";
 }
 
 interface FavoritesContextType {
@@ -28,7 +28,8 @@ const getLocalFavoritesKey = (userId: string) => `${LOCAL_FAVORITES_KEY}.${userI
 
 const readLocalFavorites = (userId: string): Favorite[] => {
   try {
-    return JSON.parse(localStorage.getItem(getLocalFavoritesKey(userId)) ?? "[]") as Favorite[];
+    const parsed = JSON.parse(localStorage.getItem(getLocalFavoritesKey(userId)) ?? "[]") as Favorite[];
+    return Array.isArray(parsed) ? parsed.map((favorite) => ({ ...favorite, esporte: "football" })) : [];
   } catch {
     return [];
   }
@@ -71,7 +72,7 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             tipo: f.tipo as "atleta" | "equipe",
             referenciaId: f.referencia_id,
             nome: f.nome,
-            esporte: f.esporte as "football" | "basketball",
+            esporte: "football",
           }))
         );
       }

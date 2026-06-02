@@ -184,8 +184,8 @@ export type Database = {
       app_role: "analista" | "apostador" | "administrador"
       chat_role: "user" | "assistant" | "system"
       favorite_type: "atleta" | "equipe"
-      sport_kind: "football" | "basketball"
-      sport_profile: "futebol" | "basquete"
+      sport_kind: "football"
+      sport_profile: "futebol"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -316,8 +316,8 @@ export const Constants = {
       app_role: ["analista", "apostador", "administrador"],
       chat_role: ["user", "assistant", "system"],
       favorite_type: ["atleta", "equipe"],
-      sport_kind: ["football", "basketball"],
-      sport_profile: ["futebol", "basquete"],
+      sport_kind: ["football"],
+      sport_profile: ["futebol"],
     },
   },
 } as const

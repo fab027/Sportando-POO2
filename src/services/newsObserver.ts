@@ -211,11 +211,10 @@ const directNewsItem = (
 
 const getKnownSourceFetchUrl = (source: NewsSource, sport: string, dev = false) => {
   const domain = normalizeDomain(source.url);
-  const isBasketball = sport === "basketball";
 
   if (domain.endsWith("lance.com.br")) return dev ? "/news-lance/" : "https://www.lance.com.br/";
-  if (domain.endsWith("ge.globo.com")) return dev ? `/news-ge/${isBasketball ? "basquete" : "futebol"}/` : `https://ge.globo.com/${isBasketball ? "basquete" : "futebol"}/`;
-  if (domain.endsWith("espn.com.br")) return dev ? `/news-espn/${isBasketball ? "nba" : "futebol"}/` : `https://www.espn.com.br/${isBasketball ? "nba" : "futebol"}/`;
+  if (domain.endsWith("ge.globo.com")) return dev ? "/news-ge/futebol/" : "https://ge.globo.com/futebol/";
+  if (domain.endsWith("espn.com.br")) return dev ? "/news-espn/futebol/" : "https://www.espn.com.br/futebol/";
 
   return "";
 };
@@ -499,13 +498,10 @@ const fetchDevDirectSiteNews = async (source: NewsSource, sport: string) => {
 
 const fetchDevEspnApiNews = async (source: NewsSource, sport: string) => {
   if (!normalizeDomain(source.url).endsWith("espn.com.br")) return [];
-  const paths =
-    sport === "basketball"
-      ? ["/espn-api/apis/site/v2/sports/basketball/nba/news?limit=50&region=br&lang=pt"]
-      : [
-          "/espn-api/apis/site/v2/sports/soccer/all/news?limit=50&region=br&lang=pt",
-          "/espn-api/apis/site/v2/sports/soccer/bra.1/news?limit=50&region=br&lang=pt",
-        ];
+  const paths = [
+    "/espn-api/apis/site/v2/sports/soccer/all/news?limit=50&region=br&lang=pt",
+    "/espn-api/apis/site/v2/sports/soccer/bra.1/news?limit=50&region=br&lang=pt",
+  ];
 
   const batches = await Promise.allSettled(
     paths.map(async (path) => {
@@ -560,6 +556,13 @@ const mergeNewsBatches = (...batches: NewsItem[][]) =>
 export const fetchNewsFromSources = async ({ sources, terms = [], sport = "football" }: NewsObserverOptions) => {
   const activeSources = sources.map(normalizeNewsSource).filter((source) => source.active);
   if (activeSources.length === 0) return [];
+
+  if (import.meta.env.DEV && activeSources.some((source) => source.type === "site")) {
+    const fallbackItems = await fetchNewsFromSourcesDevFallback({ sources: activeSources, terms, sport });
+    if (fallbackItems.length > 0 || activeSources.every((source) => source.type === "site")) {
+      return fallbackItems;
+    }
+  }
 
   try {
     const { data, error } = await supabase.functions.invoke("news-observer", {

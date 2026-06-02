@@ -8,10 +8,12 @@ import hashlib
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 import traceback
+import unicodedata
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -41,8 +43,9 @@ API_PREFIX = "https://api.sofascore.com/api/v1"
 DEFAULT_PORT = 8787
 CACHE_TTL_SECONDS = 900
 LIVE_CACHE_TTL_SECONDS = 15
-TODAY_CACHE_TTL_SECONDS = 90
+TODAY_CACHE_TTL_SECONDS = 300
 WINDOW_CACHE_TTL_SECONDS = 600
+STALE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 SEASON_EVENTS_PAGE_LIMIT = 7
 WINDOW_EVENTS_PAGE_LIMIT = 2
 SEASON_ROUND_BATCH_SIZE = 6
@@ -98,6 +101,10 @@ def _cache_ttl_for_path(path: str) -> int:
     return CACHE_TTL_SECONDS
 
 
+def _allows_stale_cache(path: str) -> bool:
+    return "/events/live" not in path
+
+
 def _cache_file(path: str) -> Path:
     digest = hashlib.sha256(path.encode("utf-8")).hexdigest()
     return _CACHE_DIR / f"{digest}.json"
@@ -113,12 +120,59 @@ def _read_disk_cache(path: str, ttl: int) -> Any | None:
         return None
 
 
+def _read_stale_disk_cache(path: str) -> Any | None:
+    try:
+        cache_file = _cache_file(path)
+        if not cache_file.exists() or time.time() - cache_file.stat().st_mtime >= STALE_CACHE_TTL_SECONDS:
+            return None
+        return json.loads(cache_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def _write_disk_cache(path: str, data: Any):
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         _cache_file(path).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
+
+
+def _curl_json(url: str) -> Any:
+    curl = shutil.which("curl") or shutil.which("curl.exe")
+    if not curl:
+        raise RuntimeError("curl executable not found")
+
+    result = subprocess.run(
+        [
+            curl,
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--location",
+            "--compressed",
+            "--max-time",
+            "25",
+            "-H",
+            "Accept: application/json",
+            "-H",
+            "Referer: https://www.sofascore.com/",
+            "-A",
+            (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+            ),
+            url,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or f"curl exit {result.returncode}").strip()
+        raise RuntimeError(message[:240])
+    return json.loads(result.stdout)
 
 
 def sofa_json(path: str) -> Any:
@@ -149,14 +203,29 @@ def sofa_json(path: str) -> Any:
         errors: list[str] = []
         data = None
 
-        if botasaurus_request_get_json is not None:
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "Referer": "https://www.sofascore.com/",
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+                    ),
+                },
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            errors.append(f"urllib: {exc}")
+
+        if data is None:
             try:
-                data = botasaurus_request_get_json(url)
-                if isinstance(data, dict) and data.get("error"):
-                    raise RuntimeError(json.dumps(data.get("error"), ensure_ascii=False))
+                data = _curl_json(url)
             except Exception as exc:
                 data = None
-                errors.append(f"botasaurus_request_get_json: {exc}")
+                errors.append(f"curl: {exc}")
 
         browser_fallback_enabled = os.environ.get("SCRAPERFC_DISABLE_BROWSER_FALLBACK") != "1"
         if data is None and browser_fallback_enabled and botasaurus_browser_get_json is not None:
@@ -170,25 +239,23 @@ def sofa_json(path: str) -> Any:
             finally:
                 cleanup_botasaurus_chrome()
 
-        if data is None:
+        botasaurus_fallback_enabled = os.environ.get("SCRAPERFC_ENABLE_BOTASAURUS_FALLBACK") == "1"
+        if data is None and botasaurus_fallback_enabled and botasaurus_request_get_json is not None:
             try:
-                request = urllib.request.Request(
-                    url,
-                    headers={
-                        "Accept": "application/json",
-                        "Referer": "https://www.sofascore.com/",
-                        "User-Agent": (
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
-                        ),
-                    },
-                )
-                with urllib.request.urlopen(request, timeout=30) as response:
-                    data = json.loads(response.read().decode("utf-8"))
+                data = botasaurus_request_get_json(url)
+                if isinstance(data, dict) and data.get("error"):
+                    raise RuntimeError(json.dumps(data.get("error"), ensure_ascii=False))
             except Exception as exc:
-                errors.append(f"urllib: {exc}")
+                data = None
+                errors.append(f"botasaurus_request_get_json: {exc}")
 
         if data is None:
+            if not _allows_stale_cache(path):
+                raise RuntimeError("; ".join(errors) or "SofaScore fetch failed")
+            stale_cached = _read_stale_disk_cache(path)
+            if stale_cached is not None:
+                _CACHE[key] = (time.time(), stale_cached)
+                return stale_cached
             raise RuntimeError("; ".join(errors) or "SofaScore fetch failed")
 
         _CACHE[key] = (time.time(), data)
@@ -202,7 +269,7 @@ def cleanup_botasaurus_chrome():
 
     command = (
         "Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe'\" | "
-        "Where-Object { $_.CommandLine -like '*\\\\Temp\\\\bota\\\\*' } | "
+        "Where-Object { $_.CommandLine -like '*\\Temp\\bota\\*' } | "
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
     )
     try:
@@ -469,12 +536,14 @@ def extract_player_id(url: str) -> int | None:
 
 
 def normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value.lower()).strip()
+    no_marks = "".join(ch for ch in unicodedata.normalize("NFD", value.lower()) if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", no_marks).strip()
 
 
 def is_male_football_player(player: dict[str, Any]) -> bool:
     sport = (player.get("sport") or {}).get("slug") or (player.get("team") or {}).get("sport", {}).get("slug")
-    return bool(player.get("id") and sport == "football" and player.get("gender") != "F" and (player.get("team") or {}).get("gender") != "F")
+    looks_like_player = bool(player.get("position") or player.get("dateOfBirthTimestamp") or player.get("jerseyNumber") or player.get("team"))
+    return bool(player.get("id") and looks_like_player and sport == "football" and player.get("gender") != "F" and (player.get("team") or {}).get("gender") != "F")
 
 
 def search_player_score(player: dict[str, Any], query: str) -> int:
@@ -498,6 +567,8 @@ def search_player_score(player: dict[str, Any], query: str) -> int:
 def extract_players_from_search(data: dict[str, Any], query: str) -> list[dict[str, Any]]:
     rows = []
     for item in data.get("results") or []:
+        if item.get("type") and item.get("type") != "player":
+            continue
         player = item.get("entity") if item.get("type") == "player" else item.get("entity") or item.get("player") or item
         if isinstance(player, dict) and is_male_football_player(player) and player_url(player):
             rows.append({"player": player, "score": search_player_score(player, query)})
@@ -506,11 +577,23 @@ def extract_players_from_search(data: dict[str, Any], query: str) -> list[dict[s
 
 def find_football_team(team_name: str) -> dict[str, Any] | None:
     data = sofa_json(f"/search/teams?q={urllib.parse.quote(team_name)}&page=0")
+    query = normalize_text(team_name)
+    candidates: list[dict[str, Any]] = []
     for item in data.get("results") or []:
         entity = item.get("entity") or {}
         if entity.get("sport", {}).get("slug") == "football" and entity.get("gender") != "F":
-            return entity
-    return None
+            names = [
+                normalize_text(str(value))
+                for value in [entity.get("name"), entity.get("shortName"), entity.get("nameCode"), entity.get("slug")]
+                if value
+            ]
+            exact = any(value == query for value in names)
+            starts = any(value.startswith(query) or query.startswith(value) for value in names)
+            includes = any(query in value or value in query for value in names)
+            score = int(entity.get("userCount") or 0) + (100_000_000 if exact else 50_000_000 if starts else 10_000_000 if includes else 0)
+            candidates.append({"entity": entity, "score": score})
+    candidates.sort(key=lambda row: row["score"], reverse=True)
+    return candidates[0]["entity"] if candidates else None
 
 
 def map_season_stats(stats_data: dict[str, Any], pair: dict[str, Any], player: dict[str, Any]) -> dict[str, Any] | None:
@@ -542,22 +625,31 @@ def map_season_stats(stats_data: dict[str, Any], pair: dict[str, Any], player: d
     }
 
 
-def player_season_pairs(seasons_data: dict[str, Any], limit: int = 12) -> list[dict[str, Any]]:
+def player_season_supports_overall(seasons_data: dict[str, Any], unique_id: int, season_id: int) -> bool:
+    types_map = seasons_data.get("typesMap") or {}
+    tournament_types = types_map.get(str(unique_id)) or types_map.get(unique_id) or {}
+    season_types = tournament_types.get(str(season_id)) or tournament_types.get(season_id)
+    return not isinstance(season_types, list) or "overall" in season_types
+
+
+def player_season_pairs(seasons_data: dict[str, Any]) -> list[dict[str, Any]]:
     pairs = []
     seen = set()
     for group in seasons_data.get("uniqueTournamentSeasons") or []:
         unique = group.get("uniqueTournament") or {}
         seasons = group.get("seasons") if isinstance(group.get("seasons"), list) else [group.get("season")]
-        for season in (seasons or [])[:3]:
+        for season in seasons or []:
             if not unique.get("id") or not season or not season.get("id"):
                 continue
-            key = f"{unique['id']}:{season['id']}"
+            unique_id = int(unique["id"])
+            season_id = int(season["id"])
+            if not player_season_supports_overall(seasons_data, unique_id, season_id):
+                continue
+            key = f"{unique_id}:{season_id}"
             if key in seen:
                 continue
             seen.add(key)
             pairs.append({"uniqueTournament": unique, "season": season})
-            if len(pairs) >= limit:
-                return pairs
     return pairs
 
 
@@ -729,13 +821,21 @@ def handle_action(body: dict[str, Any]) -> Any:
         ]
 
     if action == "team_players":
-        team = find_football_team(str(body.get("teamName") or ""))
+        raw_team_id = body.get("teamId")
+        team_id = int(raw_team_id) if str(raw_team_id or "").isdigit() else None
+        team = {"id": team_id} if team_id else find_football_team(str(body.get("teamName") or ""))
         if not team:
             return []
         data = sofa_json(f"/team/{team['id']}/players")
         players = []
         for row in data.get("players") or []:
             player = row.get("player") or row
+            player_team_id = (player.get("team") or {}).get("id")
+            try:
+                if player_team_id and int(player_team_id) != int(team["id"]):
+                    continue
+            except (TypeError, ValueError):
+                pass
             players.append({
                 "id": player.get("id"),
                 "name": player.get("name") or player.get("shortName") or "",
@@ -772,6 +872,7 @@ def handle_action(body: dict[str, Any]) -> Any:
         detail = sofa_json(f"/player/{player_id}")
         player = detail.get("player") or {}
         return {
+            "id": player.get("id") or player_id,
             "name": player.get("name") or player.get("shortName") or "",
             "team": (player.get("team") or {}).get("name") or "",
             "position": map_position(player.get("position")),

@@ -1,11 +1,90 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
-import { Search, RefreshCw, User, ArrowLeft, Shield, Star } from "lucide-react";
+import { Search, RefreshCw, User, ArrowLeft, Shield, Star, ChevronDown, Maximize2, Minimize2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useSport } from "@/contexts/SportContext";
 import { useStandings, usePlayerSearch, usePlayerStats, useTeamPlayers } from "@/hooks/useSofaScoreData";
 import { PlayerDetail, SofaMatch, TeamPlayer, sofaScoreService } from "@/services/sofaScoreService";
 import FilterBar, { FilterDef } from "@/components/FilterBar";
 import { useFavorites } from "@/contexts/FavoritesContext";
+
+const extractSofaScorePlayerId = (playerUrl: string) => {
+  const match = playerUrl.match(/\/player\/[^/]+\/(\d+)/i) || playerUrl.match(/\/(\d+)(?:[/?#].*)?$/);
+  return match ? Number(match[1]) : null;
+};
+
+const sofaScorePlayerWidgetUrl = (playerId: number) =>
+  `https://widgets.sofascore.com/pt-BR/embed/player/${playerId}?widgetTheme=light`;
+
+const seasonSortValue = (season: string) => {
+  const years = season.match(/\d{2,4}/g)?.map((value) => Number(value.length === 2 ? `20${value}` : value)) || [];
+  return years.length ? Math.max(...years) : 0;
+};
+
+type SeasonSummary = {
+  season: string;
+  rows: PlayerDetail["seasons"];
+  teams: Array<{ name: string; imageUrl?: string | null }>;
+  matchesPlayed: number;
+  starts: number;
+  minutes: number;
+  goals: number;
+  assists: number;
+  expectedGoals: number;
+  expectedAssists: number;
+  rating: number;
+};
+
+const summarizePlayerSeasons = (seasons: PlayerDetail["seasons"]): SeasonSummary[] => {
+  const bySeason = new Map<string, SeasonSummary & { ratingWeight: number; ratingTotal: number }>();
+
+  seasons.forEach((row) => {
+    const seasonName = row.season || "Sem temporada";
+    const current = bySeason.get(seasonName) || {
+      season: seasonName,
+      rows: [],
+      teams: [],
+      matchesPlayed: 0,
+      starts: 0,
+      minutes: 0,
+      goals: 0,
+      assists: 0,
+      expectedGoals: 0,
+      expectedAssists: 0,
+      rating: 0,
+      ratingWeight: 0,
+      ratingTotal: 0,
+    };
+
+    current.rows.push(row);
+    current.matchesPlayed += row.matchesPlayed || 0;
+    current.starts += row.starts || 0;
+    current.minutes += row.minutes || 0;
+    current.goals += row.goals || 0;
+    current.assists += row.assists || 0;
+    current.expectedGoals += row.expectedGoals || 0;
+    current.expectedAssists += row.expectedAssists || 0;
+
+    if (row.rating > 0) {
+      const weight = row.matchesPlayed || 1;
+      current.ratingWeight += weight;
+      current.ratingTotal += row.rating * weight;
+    }
+
+    if (row.team && !current.teams.some((team) => team.name === row.team)) {
+      current.teams.push({ name: row.team, imageUrl: row.teamImageUrl });
+    }
+
+    bySeason.set(seasonName, current);
+  });
+
+  return Array.from(bySeason.values())
+    .map(({ ratingTotal, ratingWeight, ...summary }) => ({
+      ...summary,
+      rating: ratingWeight > 0 ? ratingTotal / ratingWeight : 0,
+      rows: summary.rows.sort((a, b) => (b.matchesPlayed || 0) - (a.matchesPlayed || 0)),
+    }))
+    .sort((a, b) => seasonSortValue(b.season) - seasonSortValue(a.season));
+};
 
 const PlayerCard = ({
   player,
@@ -17,9 +96,11 @@ const PlayerCard = ({
   onBack: () => void;
 }) => {
   const { isFavorite, toggleFavorite } = useFavorites();
-  const { sport } = useSport();
-  const esporte: "football" | "basketball" = sport === "basketball" ? "basketball" : "football";
+  const esporte = "football" as const;
   const fav = isFavorite("atleta", playerUrl);
+  const sofaScorePlayerId = player.id || extractSofaScorePlayerId(playerUrl);
+  const [showSofaWidget, setShowSofaWidget] = useState(true);
+  const [expandedSofaWidget, setExpandedSofaWidget] = useState(false);
   const [openSeasons, setOpenSeasons] = useState<Record<string, boolean>>(() => ({
     [player.seasons[0]?.season || ""]: true,
   }));
@@ -39,14 +120,7 @@ const PlayerCard = ({
     if (r >= 6.5) return "bg-yellow-500 text-white";
     return "bg-muted text-foreground";
   };
-  const groupedSeasons = useMemo(() => {
-    const groups = new Map<string, PlayerDetail["seasons"]>();
-    player.seasons.forEach((season) => {
-      groups.set(season.season, [...(groups.get(season.season) || []), season]);
-    });
-    return Array.from(groups.entries());
-  }, [player.seasons]);
-
+  const seasonSummaries = useMemo(() => summarizePlayerSeasons(player.seasons), [player.seasons]);
   return (
     <div className="space-y-6">
       <button onClick={onBack} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
@@ -98,6 +172,46 @@ const PlayerCard = ({
         </div>
       </div>
 
+      {sofaScorePlayerId ? (
+        <div className="rounded-xl border border-border bg-card">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-6 py-4">
+            <h3 className="font-display text-sm font-semibold text-foreground">Perfil SofaScore</h3>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setExpandedSofaWidget((current) => !current)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                {expandedSofaWidget ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                {expandedSofaWidget ? "Recolher" : "Ampliar"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSofaWidget((current) => !current)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showSofaWidget ? "rotate-180" : ""}`} />
+                {showSofaWidget ? "Ocultar" : "Mostrar"}
+              </button>
+            </div>
+          </div>
+          {showSofaWidget && (
+            <div className={`flex justify-center ${expandedSofaWidget ? "p-2" : "p-4"}`}>
+              <iframe
+                id={`sofa-player-embed-${sofaScorePlayerId}`}
+                title={`Perfil SofaScore de ${player.name}`}
+                src={sofaScorePlayerWidgetUrl(sofaScorePlayerId)}
+                loading="lazy"
+                className="w-full"
+                style={{ height: expandedSofaWidget ? 720 : 568, maxWidth: expandedSofaWidget ? "100%" : 730 }}
+                frameBorder={0}
+                scrolling="no"
+              />
+            </div>
+          )}
+        </div>
+      ) : null}
+
       {player.seasons && player.seasons.length > 0 ? (
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-4">
@@ -122,58 +236,77 @@ const PlayerCard = ({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-secondary/50">
-                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Temporada</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Competição</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Time</th>
-                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">JOG</th>
-                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">TIT</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Ano</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Time / competição</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">MP</th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">MIN</th>
-                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">GOL</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">GLS</th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">AST</th>
-                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">xG</th>
-                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">xA</th>
-                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">Nota</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">ASR</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {groupedSeasons.flatMap(([seasonName, competitions]) => [
-                    <tr key={`${seasonName}-header`} className="border-b border-border bg-secondary/30">
-                      <td colSpan={11} className="px-4 py-3">
+                  {seasonSummaries.flatMap((summary) => [
+                    <tr key={`${summary.season}-summary`} className="border-b border-border bg-secondary/30">
+                      <td className="px-4 py-3">
                         <button
-                          onClick={() => setOpenSeasons((current) => ({ ...current, [seasonName]: !current[seasonName] }))}
-                          className="flex w-full items-center justify-between text-left text-sm font-semibold text-foreground"
+                          type="button"
+                          onClick={() => setOpenSeasons((current) => ({ ...current, [summary.season]: !current[summary.season] }))}
+                          className="inline-flex items-center gap-2 text-left font-semibold text-foreground"
                         >
-                          <span>Temporada {seasonName}</span>
-                          <span className="text-xs font-normal text-muted-foreground">
-                            {openSeasons[seasonName] ? "Fechar" : "Abrir"}
-                          </span>
+                          <ChevronDown className={`h-4 w-4 transition-transform ${openSeasons[summary.season] ? "rotate-180" : ""}`} />
+                          {summary.season}
                         </button>
                       </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {summary.teams.length === 0 ? (
+                            <span className="text-muted-foreground">Time não informado</span>
+                          ) : summary.teams.map((team) => (
+                            <span key={team.name} className="inline-flex items-center gap-1.5 rounded-md bg-background px-2 py-1 text-xs font-medium text-foreground">
+                              {team.imageUrl && <img src={team.imageUrl} alt="" className="h-4 w-4 object-contain" loading="lazy" />}
+                              {team.name}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-center font-semibold text-foreground">{summary.matchesPlayed}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{summary.minutes}</td>
+                      <td className="px-4 py-3 text-center font-semibold text-foreground">{summary.goals}</td>
+                      <td className="px-4 py-3 text-center text-foreground">{summary.assists}</td>
+                      <td className="px-4 py-3 text-center">
+                        {summary.rating > 0 ? (
+                          <span className={`inline-flex items-center justify-center rounded-md px-2 py-0.5 text-xs font-bold ${getRatingColor(summary.rating)}`}>
+                            {summary.rating.toFixed(2)}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
                     </tr>,
-                    ...(openSeasons[seasonName] ? competitions.map((s, i) => (
-                    <tr key={`${seasonName}-${s.tournament}-${i}`} className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
-                      <td className="px-4 py-3 font-medium text-foreground">{s.season}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{s.tournament || "—"}</td>
+                    ...(openSeasons[summary.season] ? summary.rows.map((s, i) => (
+                    <tr key={`${summary.season}-${s.tournament}-${i}`} className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors">
+                      <td className="px-4 py-3 text-xs text-muted-foreground" />
                       <td className="px-4 py-3 text-muted-foreground">
-                        <div className="flex items-center gap-2">
-                          {s.teamImageUrl && <img src={s.teamImageUrl} alt="" className="h-6 w-6 object-contain" loading="lazy" />}
-                          <span>{s.team || "—"}</span>
+                        <div className="flex flex-col gap-1">
+                          <span className="font-medium text-foreground">{s.tournament || "-"}</span>
+                          <span className="inline-flex items-center gap-2 text-xs">
+                            {s.teamImageUrl && <img src={s.teamImageUrl} alt="" className="h-5 w-5 object-contain" loading="lazy" />}
+                            {s.team || "Time não informado"}
+                          </span>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-center text-foreground">{s.matchesPlayed}</td>
-                      <td className="px-4 py-3 text-center text-muted-foreground">{s.starts ?? "—"}</td>
                       <td className="px-4 py-3 text-center text-muted-foreground">{s.minutes}</td>
                       <td className="px-4 py-3 text-center font-semibold text-foreground">{s.goals}</td>
                       <td className="px-4 py-3 text-center text-foreground">{s.assists}</td>
-                      <td className="px-4 py-3 text-center text-muted-foreground">{s.expectedGoals ? s.expectedGoals.toFixed(2) : "—"}</td>
-                      <td className="px-4 py-3 text-center text-muted-foreground">{s.expectedAssists ? s.expectedAssists.toFixed(2) : "—"}</td>
                       <td className="px-4 py-3 text-center">
                         {s.rating > 0 ? (
                           <span className={`inline-flex items-center justify-center rounded-md px-2 py-0.5 text-xs font-bold ${getRatingColor(s.rating)}`}>
                             {s.rating.toFixed(2)}
                           </span>
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground">-</span>
                         )}
                       </td>
                     </tr>
@@ -224,6 +357,10 @@ const AthletesPage = () => {
   const [search, setSearch] = useState("");
   const [selectedPlayerUrl, setSelectedPlayerUrl] = useState<string | null>(params.get("player"));
   const [selectedTeam, setSelectedTeam] = useState<string | null>(params.get("team"));
+  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(() => {
+    const raw = Number(params.get("teamId"));
+    return Number.isFinite(raw) && raw > 0 ? raw : null;
+  });
   const [mode, setMode] = useState<"search" | "team">(params.get("team") ? "team" : "search");
   const [filters, setFilters] = useState<Record<string, string>>({ position: "all", age: "all" });
   const [teamNextMatches, setTeamNextMatches] = useState<SofaMatch[]>([]);
@@ -232,11 +369,16 @@ const AthletesPage = () => {
   const { results: searchResults, status: searchStatus, search: doSearch } = usePlayerSearch();
   const { data: playerData, status: playerStatus } = usePlayerStats(selectedPlayerUrl);
   const { data: standings } = useStandings(league.sofascoreUrl);
-  const { data: teamPlayers, status: teamPlayersStatus } = useTeamPlayers(selectedTeam);
   const selectedTeamInfo = useMemo(
-    () => standings.find((team) => team.name === selectedTeam || team.shortName === selectedTeam) || null,
-    [selectedTeam, standings]
+    () =>
+      standings.find((team) => selectedTeamId && team.id === selectedTeamId) ||
+      standings.find((team) => team.name === selectedTeam || team.shortName === selectedTeam) ||
+      null,
+    [selectedTeam, selectedTeamId, standings]
   );
+  const selectedTeamName = selectedTeamInfo?.name || selectedTeam || "";
+  const effectiveTeamId = selectedTeamInfo?.id || selectedTeamId;
+  const { data: teamPlayers, status: teamPlayersStatus } = useTeamPlayers(selectedTeamName || null, effectiveTeamId);
 
   useEffect(() => {
     if (!selectedTeam) {
@@ -247,7 +389,7 @@ const AthletesPage = () => {
     let cancelled = false;
     setTeamMatchesStatus("loading");
     sofaScoreService
-      .getTeamNextMatches(selectedTeamInfo?.id ? [String(selectedTeamInfo.id)] : [], [selectedTeam])
+      .getTeamNextMatches(effectiveTeamId ? [String(effectiveTeamId)] : [], selectedTeamName ? [selectedTeamName] : [])
       .then((matches) => {
         if (cancelled) return;
         setTeamNextMatches(matches.slice(0, 6));
@@ -261,7 +403,7 @@ const AthletesPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [selectedTeam, selectedTeamInfo?.id]);
+  }, [selectedTeam, selectedTeamName, effectiveTeamId]);
 
   const handleSearch = useCallback((value: string) => {
     setSearch(value);
@@ -271,7 +413,7 @@ const AthletesPage = () => {
   const handlePlayerFromTeam = (player: TeamPlayer) => {
     // Only open directly when we have a SofaScore profile URL — that's the source
     // player_stats knows how to scrape. Otherwise fall back to a name search.
-    if (player.url && /sofascore\.com\/.*\/player\//i.test(player.url)) {
+    if (player.url && /sofascore\.com\/(?:.*\/)?player\//i.test(player.url)) {
       setSelectedPlayerUrl(player.url);
       return;
     }
@@ -349,7 +491,7 @@ const AthletesPage = () => {
 
       <div className="flex gap-1 rounded-lg bg-secondary p-1 w-fit">
         <button
-          onClick={() => { setMode("search"); setSelectedTeam(null); }}
+          onClick={() => { setMode("search"); setSelectedTeam(null); setSelectedTeamId(null); }}
           className={`rounded-md px-4 py-2 text-sm font-medium transition-all ${
             mode === "search" ? "bg-sport text-sport-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
           }`}
@@ -444,10 +586,13 @@ const AthletesPage = () => {
             </div>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {standings.map((t) => (
+              {standings.map((t, index) => (
                 <button
-                  key={t.id}
-                  onClick={() => setSelectedTeam(t.name)}
+                  key={`${t.groupName || "table"}-${t.id}-${t.position}-${index}`}
+                  onClick={() => {
+                    setSelectedTeam(t.name);
+                    setSelectedTeamId(t.id);
+                  }}
                   className="flex items-center gap-3 rounded-xl border border-border bg-card p-4 text-left hover:shadow-md transition-shadow"
                 >
                   {t.imageUrl ? (
@@ -471,7 +616,10 @@ const AthletesPage = () => {
       {mode === "team" && selectedTeam && (
         <div className="space-y-4">
           <button
-            onClick={() => setSelectedTeam(null)}
+            onClick={() => {
+              setSelectedTeam(null);
+              setSelectedTeamId(null);
+            }}
             className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             <ArrowLeft className="h-4 w-4" /> Voltar às equipes
@@ -484,7 +632,7 @@ const AthletesPage = () => {
               <Shield className="h-6 w-6 text-sport" />
             )}
             <h2 className="font-display text-xl font-bold text-foreground">
-              Elenco — {selectedTeam}
+              Elenco — {selectedTeamName}
             </h2>
           </div>
 
@@ -500,7 +648,7 @@ const AthletesPage = () => {
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-medium uppercase text-muted-foreground">Clube</p>
-                  <h3 className="mt-1 truncate font-display text-xl font-bold text-foreground">{selectedTeam}</h3>
+                  <h3 className="mt-1 truncate font-display text-xl font-bold text-foreground">{selectedTeamName}</h3>
                   <p className="mt-1 text-sm text-muted-foreground">{league.name}</p>
                 </div>
               </div>
@@ -545,8 +693,8 @@ const AthletesPage = () => {
                 <p className="text-sm text-muted-foreground">Nenhuma partida futura encontrada.</p>
               ) : (
                 <div className="space-y-2">
-                  {teamNextMatches.map((match) => (
-                    <div key={match.id} className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
+                  {teamNextMatches.map((match, index) => (
+                    <div key={`${match.id}-${index}`} className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
                       <p className="text-xs text-muted-foreground">
                         {match.tournament}{match.roundInfo ? ` - Rodada ${match.roundInfo}` : ""}
                       </p>
@@ -583,7 +731,7 @@ const AthletesPage = () => {
           {teamPlayersStatus === "success" && filteredTeamPlayers.length === 0 && (
             <p className="text-sm text-muted-foreground py-4">
               {teamPlayers.length === 0
-                ? `Nenhum jogador encontrado para ${selectedTeam}.`
+                ? `Nenhum jogador encontrado para ${selectedTeamName}.`
                 : "Nenhum jogador corresponde aos filtros aplicados."}
             </p>
           )}
@@ -601,9 +749,9 @@ const AthletesPage = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredTeamPlayers.map((p) => (
+                  {filteredTeamPlayers.map((p, index) => (
                     <tr
-                      key={p.id}
+                      key={`${p.id}-${p.name}-${index}`}
                       onClick={() => handlePlayerFromTeam(p)}
                       className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors cursor-pointer"
                     >

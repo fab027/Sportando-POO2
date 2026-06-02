@@ -23,7 +23,7 @@ const FavoriteButton = ({ tipo, referenciaId, nome }: FavoriteButtonProps) => {
       title={favorited ? "Remover dos favoritos" : "Adicionar aos favoritos"}
     >
       <Star
-        className={`h-4 w-4 ${favorited ? "fill-basketball text-basketball" : "text-muted-foreground"}`}
+        className={`h-4 w-4 ${favorited ? "fill-sport text-sport" : "text-muted-foreground"}`}
       />
     </button>
   );

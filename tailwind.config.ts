@@ -57,11 +57,6 @@ export default {
           light: "hsl(var(--football-light))",
           foreground: "hsl(var(--football-foreground))",
         },
-        basketball: {
-          DEFAULT: "hsl(var(--basketball))",
-          light: "hsl(var(--basketball-light))",
-          foreground: "hsl(var(--basketball-foreground))",
-        },
         sport: {
           DEFAULT: "hsl(var(--sport-active))",
           light: "hsl(var(--sport-active-light))",

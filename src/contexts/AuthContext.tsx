@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 import { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 
-export type SportProfile = "futebol" | "basquete";
+export type SportProfile = "futebol";
 
 export interface Profile {
   id: string;
@@ -42,6 +42,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const LOCAL_AUTH_USERS_KEY = "sportando.localAuth.users";
 const LOCAL_AUTH_SESSION_KEY = "sportando.localAuth.session";
 const AUTH_REQUEST_TIMEOUT_MS = 4000;
+
+const normalizeSportProfile = (_value?: string | null): SportProfile => "futebol";
 
 type LocalAuthUser = {
   id: string;
@@ -87,7 +89,7 @@ const toLocalUser = (account: LocalAuthUser): User =>
     app_metadata: { provider: "local" },
     user_metadata: {
       nome: account.nome,
-      sport_profile: account.sport_profile,
+      sport_profile: normalizeSportProfile(account.sport_profile),
       avatar_url: account.avatar_url || null,
       bio: account.bio || null,
     },
@@ -119,7 +121,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       id: account.id,
       user_id: account.id,
       nome: account.nome,
-      sport_profile: account.sport_profile,
+      sport_profile: normalizeSportProfile(account.sport_profile),
       avatar_url: account.avatar_url || null,
       bio: account.bio || null,
     });
@@ -164,7 +166,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             (authUser.user_metadata?.name as string | undefined) ||
             authUser.email?.split("@")[0] ||
             "Usuário",
-          sport_profile: ((authUser.user_metadata?.sport_profile as SportProfile | undefined) || "futebol") as SportProfile,
+          sport_profile: normalizeSportProfile(authUser.user_metadata?.sport_profile as string | undefined),
         };
 
         const { data: created } = await supabase
@@ -235,7 +237,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     nome: string,
     email: string,
     senha: string,
-    sportProfile: SportProfile
+    _sportProfile: SportProfile = "futebol"
   ) => {
     try {
       const { error } = await withAuthTimeout(
@@ -244,7 +246,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           password: senha,
           options: {
             emailRedirectTo: `${window.location.origin}/`,
-            data: { nome, sport_profile: sportProfile },
+            data: { nome, sport_profile: "futebol" },
           },
         })
       );
@@ -266,7 +268,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email,
       senha,
       nome,
-      sport_profile: sportProfile,
+      sport_profile: "futebol",
     };
     writeLocalUsers([...users, account]);
     applyLocalSession(account);
@@ -277,7 +279,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!user) return { error: "Usuario nao autenticado." };
 
     const nextNome = (nome ?? profile?.nome ?? user.user_metadata?.nome ?? user.email?.split("@")[0] ?? "Usuario").trim();
-    const nextSportProfile = sportProfile ?? profile?.sport_profile ?? "futebol";
+    const nextSportProfile = normalizeSportProfile(sportProfile ?? profile?.sport_profile ?? "futebol");
     const nextAvatarUrl = avatarUrl?.trim() || null;
     const nextBio = bio?.trim() || null;
 

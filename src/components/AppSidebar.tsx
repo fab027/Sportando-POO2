@@ -1,7 +1,7 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useSport } from "@/contexts/SportContext";
-import { SportProfile, useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/AuthContext";
 import LeagueSelector from "./LeagueSelector";
 import BrandLogo from "./BrandLogo";
 import ThemeToggle from "./ThemeToggle";
@@ -37,24 +37,13 @@ const navItems = [
   { to: "/equipes", label: "Classificacao", icon: Trophy },
   { to: "/atletas", label: "Atletas/Equipes", icon: Users },
   { to: "/partidas", label: "Partidas", icon: CalendarDays },
-  { to: "/noticias", label: "Notícias", icon: Newspaper },
+  { to: "/noticias", label: "Noticias", icon: Newspaper },
   { to: "/favoritos", label: "Favoritos", icon: Star },
   { to: "/agregador", label: "Agregador", icon: Sparkles },
 ];
 
-type ProfileSportChoice = "football" | "basketball" | "both";
-
-const sportProfileToChoice = (sportProfile?: string | null): ProfileSportChoice =>
-  sportProfile === "basquete" ? "basketball" : "football";
-
-const choiceToSportProfile = (choice: ProfileSportChoice, fallback: SportProfile): SportProfile => {
-  if (choice === "basketball") return "basquete";
-  if (choice === "football") return "futebol";
-  return fallback;
-};
-
 const AppSidebar = () => {
-  const { sportClass, sport, sportLabel, profileSportMode, setProfileSportMode, setSport } = useSport();
+  const { sportClass, sportLabel } = useSport();
   const { profile, user, logout, isAuthenticated, updateProfile } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -63,19 +52,13 @@ const AppSidebar = () => {
     (user?.user_metadata?.nome as string | undefined) ||
     (user?.user_metadata?.name as string | undefined) ||
     user?.email?.split("@")[0] ||
-    "Usuário";
+    "Usuario";
   const displayAvatar = profile?.avatar_url || (user?.user_metadata?.avatar_url as string | undefined) || "";
   const displayBio = profile?.bio || (user?.user_metadata?.bio as string | undefined) || "";
-  const displayProfile = profileSportMode === "both" ? "Futebol e Basquete" : sportLabel;
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileName, setProfileName] = useState(displayName);
   const [profileAvatar, setProfileAvatar] = useState(displayAvatar);
   const [profileBio, setProfileBio] = useState(displayBio);
-  const [profileSportChoice, setProfileSportChoice] = useState<ProfileSportChoice>(
-    profileSportMode === "both"
-      ? "both"
-      : sportProfileToChoice(profile?.sport_profile || (user?.user_metadata?.sport_profile as string | undefined))
-  );
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const profileInitial = useMemo(() => displayName.charAt(0).toUpperCase(), [displayName]);
@@ -85,13 +68,8 @@ const AppSidebar = () => {
     setProfileName(displayName);
     setProfileAvatar(displayAvatar);
     setProfileBio(displayBio);
-    setProfileSportChoice(
-      profileSportMode === "both"
-        ? "both"
-        : sportProfileToChoice(profile?.sport_profile || (user?.user_metadata?.sport_profile as string | undefined))
-    );
     setProfileError(null);
-  }, [displayAvatar, displayBio, displayName, profile?.sport_profile, profileOpen, profileSportMode, user?.user_metadata?.sport_profile]);
+  }, [displayAvatar, displayBio, displayName, profileOpen]);
 
   const handleLogout = async () => {
     await logout();
@@ -116,11 +94,9 @@ const AppSidebar = () => {
 
     setProfileSaving(true);
     setProfileError(null);
-    const fallbackSport = (profile?.sport_profile || (sport === "basketball" ? "basquete" : "futebol")) as SportProfile;
-    const nextSportProfile = choiceToSportProfile(profileSportChoice, fallbackSport);
     const { error } = await updateProfile({
       nome: profileName,
-      sportProfile: nextSportProfile,
+      sportProfile: "futebol",
       avatarUrl: profileAvatar,
       bio: profileBio,
     });
@@ -131,12 +107,6 @@ const AppSidebar = () => {
       return;
     }
 
-    if (profileSportChoice === "both") {
-      setProfileSportMode("both");
-    } else {
-      setProfileSportMode("profile");
-      setSport(profileSportChoice);
-    }
     setProfileOpen(false);
   };
 
@@ -144,47 +114,22 @@ const AppSidebar = () => {
     <aside className={`${sportClass} flex h-screen w-64 flex-col border-r border-white/10 bg-sidebar text-sidebar-foreground`}>
       <div className="flex items-center gap-3 border-b border-white/10 px-5 py-5">
         <BrandLogo className="h-10 w-10 rounded-xl" />
-        <span className="font-display text-xl font-bold tracking-tight text-white">
-          Sportando
-        </span>
+        <span className="font-display text-xl font-bold tracking-tight text-white">Sportando</span>
       </div>
 
       <div className="space-y-2 px-4 py-4">
-        {/* RF03: Sport is locked unless the profile is configured for both sports. */}
         <div className="flex items-center justify-between rounded-lg bg-white/[0.08] px-3 py-2">
           <span className="text-xs font-medium text-white/60">Esporte</span>
-          {profileSportMode === "both" ? (
-            <div className="flex rounded-md bg-black/20 p-0.5">
-              {[
-                { key: "football" as const, label: "Futebol" },
-                { key: "basketball" as const, label: "Basquete" },
-              ].map((option) => (
-                <button
-                  key={option.key}
-                  type="button"
-                  onClick={() => setSport(option.key)}
-                  className={`rounded px-2 py-1 text-[11px] font-semibold transition-colors ${
-                    sport === option.key
-                      ? "bg-sport text-sport-foreground"
-                      : "text-white/60 hover:bg-white/10 hover:text-white"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <span className="flex items-center gap-1.5 rounded-md bg-sport px-2 py-1 text-xs font-semibold text-sport-foreground">
-              <Lock className="h-3 w-3" />
-              {sportLabel}
-            </span>
-          )}
+          <span className="flex items-center gap-1.5 rounded-md bg-sport px-2 py-1 text-xs font-semibold text-sport-foreground">
+            <Lock className="h-3 w-3" />
+            {sportLabel}
+          </span>
         </div>
         <LeagueSelector />
         <ThemeToggle className="w-full !border-white/10 !bg-white/[0.08] !text-white hover:!bg-white/[0.12]" />
       </div>
 
-      <nav className="flex-1 space-y-1 px-3 overflow-y-auto">
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3">
         {navItems.map((item) => {
           const isActive = location.pathname === item.to;
           return (
@@ -217,9 +162,7 @@ const AppSidebar = () => {
                 </Avatar>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-white">{displayName}</p>
-                  <p className="truncate text-xs text-white/[0.55]">
-                    Perfil: {displayProfile}
-                  </p>
+                  <p className="truncate text-xs text-white/[0.55]">Perfil: {sportLabel}</p>
                 </div>
                 <DialogTrigger asChild>
                   <button
@@ -289,33 +232,6 @@ const AppSidebar = () => {
                       placeholder="Ex: Analista, torcedor, estudante..."
                     />
                   </label>
-
-                  <div className="space-y-2">
-                    <span className="text-xs font-semibold text-foreground">Esportes do perfil</span>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { value: "football" as const, label: "Futebol" },
-                        { value: "basketball" as const, label: "Basquete" },
-                        { value: "both" as const, label: "Ambos" },
-                      ].map((option) => {
-                        const active = profileSportChoice === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => setProfileSportChoice(option.value)}
-                            className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
-                              active
-                                ? "border-sport bg-sport text-sport-foreground"
-                                : "border-border bg-card text-muted-foreground hover:bg-secondary hover:text-foreground"
-                            }`}
-                          >
-                            {option.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
 
                   {profileError && <p className="text-xs text-destructive">{profileError}</p>}
 

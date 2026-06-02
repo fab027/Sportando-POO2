@@ -231,6 +231,7 @@ const SOFASCORE_BASE_URL = "https://www.sofascore.com/api/v1";
 const SEASON_EVENTS_PAGE_LIMIT = 7;
 const WINDOW_EVENTS_PAGE_LIMIT = 2;
 const SEASON_ROUND_BATCH_SIZE = 6;
+const PLAYER_SEASON_BATCH_SIZE = 6;
 const sofaFetch = async (path: string): Promise<any> => {
   const res = await fetch(`${SOFASCORE_BASE_URL}${path}`, {
     headers: {
@@ -533,9 +534,23 @@ const playerUrl = (player: any) =>
 
 const findFootballTeam = async (teamName: string) => {
   const searchData = await sofaFetch(`/search/teams?q=${encodeURIComponent(teamName)}&page=0`);
+  const query = normalizeText(teamName);
   return (Array.isArray(searchData?.results) ? searchData.results : [])
     .map((item: any) => item.entity)
-    .find((entity: any) => entity?.sport?.slug === "football" && entity?.gender !== "F");
+    .filter((entity: any) => entity?.sport?.slug === "football" && entity?.gender !== "F")
+    .map((entity: any) => {
+      const candidates = [entity?.name, entity?.shortName, entity?.nameCode, entity?.slug]
+        .filter(Boolean)
+        .map((value: unknown) => normalizeText(String(value)));
+      const exact = candidates.some((value: string) => value === query);
+      const starts = candidates.some((value: string) => value.startsWith(query) || query.startsWith(value));
+      const includes = candidates.some((value: string) => value.includes(query) || query.includes(value));
+      return {
+        entity,
+        score: Number(entity?.userCount || 0) + (exact ? 100_000_000 : starts ? 50_000_000 : includes ? 10_000_000 : 0),
+      };
+    })
+    .sort((a: any, b: any) => b.score - a.score)[0]?.entity;
 };
 
 const extractPlayerId = (url: string): number | null => {
@@ -555,8 +570,12 @@ const playerAge = (player: any) =>
     ? Math.floor((Date.now() - player.dateOfBirthTimestamp * 1000) / (365.25 * 24 * 60 * 60 * 1000))
     : null;
 
+const looksLikePlayerEntity = (player: any) =>
+  Boolean(player?.position || player?.dateOfBirthTimestamp || player?.jerseyNumber || player?.team);
+
 const isMaleFootballPlayer = (player: any) =>
   player?.id &&
+  looksLikePlayerEntity(player) &&
   (player?.sport?.slug === "football" || player?.team?.sport?.slug === "football") &&
   player?.gender !== "F" &&
   player?.team?.gender !== "F";
@@ -578,13 +597,21 @@ const searchPlayerScore = (player: any, query: string) => {
 const extractPlayersFromSearch = (data: any, query: string) => {
   const items = Array.isArray(data?.results) ? data.results : [];
   return items
+    .filter((item: any) => !item?.type || item.type === "player")
     .map((item: any) => (item?.type === "player" ? item.entity : item?.entity || item?.player || item))
     .filter(isMaleFootballPlayer)
     .filter((player: any) => playerUrl(player))
     .map((player: any) => ({ player, score: searchPlayerScore(player, query) }));
 };
 
-const playerSeasonPairs = (seasonsData: any, limit = 12) => {
+const playerSeasonSupportsOverall = (seasonsData: any, uniqueTournamentId: number, seasonId: number) => {
+  const typesMap = seasonsData?.typesMap || {};
+  const tournamentTypes = typesMap[String(uniqueTournamentId)] || typesMap[uniqueTournamentId] || {};
+  const seasonTypes = tournamentTypes[String(seasonId)] || tournamentTypes[seasonId];
+  return !Array.isArray(seasonTypes) || seasonTypes.includes("overall");
+};
+
+const playerSeasonPairs = (seasonsData: any) => {
   const groups = Array.isArray(seasonsData?.uniqueTournamentSeasons)
     ? seasonsData.uniqueTournamentSeasons
     : [];
@@ -594,13 +621,15 @@ const playerSeasonPairs = (seasonsData: any, limit = 12) => {
   for (const group of groups) {
     const uniqueTournament = group?.uniqueTournament;
     const seasons = Array.isArray(group?.seasons) ? group.seasons : group?.season ? [group.season] : [];
-    for (const season of seasons.slice(0, 3)) {
+    for (const season of seasons) {
       if (!uniqueTournament?.id || !season?.id) continue;
-      const key = `${uniqueTournament.id}:${season.id}`;
+      const uniqueTournamentId = Number(uniqueTournament.id);
+      const seasonId = Number(season.id);
+      if (!playerSeasonSupportsOverall(seasonsData, uniqueTournamentId, seasonId)) continue;
+      const key = `${uniqueTournamentId}:${seasonId}`;
       if (seen.has(key)) continue;
       seen.add(key);
       pairs.push({ uniqueTournament, season });
-      if (pairs.length >= limit) return pairs;
     }
   }
 
@@ -642,21 +671,28 @@ const getPlayerSeasons = async (playerId: number, player: any) => {
     uniqueTournamentSeasons: [],
   }));
   const pairs = playerSeasonPairs(seasonsData);
-  const settled = await Promise.allSettled(
-    pairs.map(async (pair) => {
-      const statsData = await sofaFetch(
-        `/player/${playerId}/unique-tournament/${pair.uniqueTournament.id}/season/${pair.season.id}/statistics/overall`
-      );
-      return mapSeasonStats(statsData, pair, player);
-    })
-  );
+  const results: any[] = [];
 
-  return settled
-    .filter((entry): entry is PromiseFulfilledResult<any> => entry.status === "fulfilled")
-    .map((entry) => entry.value)
-    .filter(Boolean)
-    .filter((season: any) => season.matchesPlayed > 0 || season.minutes > 0 || season.goals > 0 || season.assists > 0)
-    .sort((a: any, b: any) => seasonSortValue(b.season) - seasonSortValue(a.season));
+  for (let index = 0; index < pairs.length; index += PLAYER_SEASON_BATCH_SIZE) {
+    const batch = pairs.slice(index, index + PLAYER_SEASON_BATCH_SIZE);
+    const settled = await Promise.allSettled(
+      batch.map(async (pair) => {
+        const statsData = await sofaFetch(
+          `/player/${playerId}/unique-tournament/${pair.uniqueTournament.id}/season/${pair.season.id}/statistics/overall`
+        );
+        return mapSeasonStats(statsData, pair, player);
+      })
+    );
+
+    settled
+      .filter((entry): entry is PromiseFulfilledResult<any> => entry.status === "fulfilled")
+      .map((entry) => entry.value)
+      .filter(Boolean)
+      .filter((season: any) => season.matchesPlayed > 0 || season.minutes > 0 || season.goals > 0 || season.assists > 0)
+      .forEach((season: any) => results.push(season));
+  }
+
+  return results.sort((a: any, b: any) => seasonSortValue(b.season) - seasonSortValue(a.season));
 };
 
 serve(async (req) => {
@@ -1038,6 +1074,7 @@ serve(async (req) => {
       const seasons = await getPlayerSeasons(playerId, player);
 
       result = {
+        id: player.id || playerId,
         name: player.name || player.shortName || "",
     team: player.team?.name || "",
     position: mapPosition(player.position),
@@ -1160,29 +1197,37 @@ serve(async (req) => {
         .slice(0, 20);
     } else if (action === "team_players") {
       const { teamName } = body;
-      if (!teamName) throw new Error("teamName required");
-
-      const team = await findFootballTeam(teamName);
+      const requestedTeamId = Number(body.teamId);
+      const team =
+        Number.isFinite(requestedTeamId) && requestedTeamId > 0
+          ? { id: requestedTeamId }
+          : await findFootballTeam(String(teamName || ""));
       if (!team?.id) {
         result = [];
       } else {
         const playersData = await sofaFetch(`/team/${team.id}/players`);
         const players = Array.isArray(playersData?.players) ? playersData.players : [];
-        result = players.map((row: any) => {
-          const player = row.player || row;
-          return {
-            id: player.id,
-            name: player.name || player.shortName || "",
-            imageUrl: playerImageUrl(player.id),
-            position: mapPosition(player.position),
-            shirtNumber: player.jerseyNumber ? Number(player.jerseyNumber) : null,
-            nationality: player.country?.name || "",
-            age: player.dateOfBirthTimestamp
-              ? Math.floor((Date.now() - player.dateOfBirthTimestamp * 1000) / (365.25 * 24 * 60 * 60 * 1000))
-              : null,
-            url: playerUrl(player),
-          };
-        });
+        result = players
+          .filter((row: any) => {
+            const player = row.player || row;
+            const playerTeamId = Number(player?.team?.id);
+            return !Number.isFinite(playerTeamId) || playerTeamId <= 0 || playerTeamId === Number(team.id);
+          })
+          .map((row: any) => {
+            const player = row.player || row;
+            return {
+              id: player.id,
+              name: player.name || player.shortName || "",
+              imageUrl: playerImageUrl(player.id),
+              position: mapPosition(player.position),
+              shirtNumber: player.jerseyNumber ? Number(player.jerseyNumber) : null,
+              nationality: player.country?.name || "",
+              age: player.dateOfBirthTimestamp
+                ? Math.floor((Date.now() - player.dateOfBirthTimestamp * 1000) / (365.25 * 24 * 60 * 60 * 1000))
+                : null,
+              url: playerUrl(player),
+            };
+          });
       }
 
       return new Response(JSON.stringify(result), {

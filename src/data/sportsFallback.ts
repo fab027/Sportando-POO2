@@ -17,7 +17,13 @@ export const getFallbackMatches = (_leagueUrl?: string): { lastMatches: SofaMatc
 
 export const getFallbackPlayerSearch = (_query?: string): PlayerSearchResult[] => [];
 
-export const getFallbackPlayerDetail = (_playerUrl?: string): PlayerDetail => ({
+const fallbackPlayerId = (playerUrl?: string) => {
+  const match = playerUrl?.match(/\/player\/[^/]+\/(\d+)/i) || playerUrl?.match(/\/(\d+)(?:[/?#].*)?$/);
+  return match ? Number(match[1]) : null;
+};
+
+export const getFallbackPlayerDetail = (playerUrl?: string): PlayerDetail => ({
+  id: fallbackPlayerId(playerUrl),
   name: "Dados indisponiveis",
   team: "",
   position: "",

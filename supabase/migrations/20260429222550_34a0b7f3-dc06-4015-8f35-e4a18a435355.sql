@@ -11,7 +11,7 @@ BEGIN
   VALUES (
     NEW.id,
     COALESCE(NEW.raw_user_meta_data->>'nome', split_part(NEW.email, '@', 1)),
-    COALESCE((NEW.raw_user_meta_data->>'sport_profile')::public.sport_profile, 'futebol'::public.sport_profile)
+    'futebol'::public.sport_profile
   );
   RETURN NEW;
 END;

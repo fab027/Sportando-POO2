@@ -64,6 +64,34 @@ function cached<T>(key: string, fn: () => Promise<T>, force = false): Promise<T>
   });
 }
 
+function readCachedArray<T>(key: string, force = false): T[] | null {
+  const hit = cache[key];
+  if (!force && hit && Date.now() - hit.ts < TTL && Array.isArray(hit.data)) {
+    return hit.data as T[];
+  }
+  const stored = readStoredCache<T[]>(key);
+  if (!force && stored && Date.now() - stored.ts < TTL && Array.isArray(stored.data)) {
+    cache[key] = stored;
+    return stored.data;
+  }
+  return null;
+}
+
+function writeArrayCache<T>(key: string, data: T[]) {
+  cache[key] = { data, ts: Date.now() };
+  writeStoredCache(key, data);
+}
+
+function isRealPlayerDetail(value: unknown): value is PlayerDetail {
+  if (!value || typeof value !== "object") return false;
+  const detail = value as PlayerDetail;
+  return Boolean(detail.name && !/dados indisponiveis/i.test(detail.name) && Array.isArray(detail.seasons));
+}
+
+function hasPlayerSeasonStats(value: unknown): value is PlayerDetail {
+  return isRealPlayerDetail(value) && value.seasons.length > 0;
+}
+
 type Status = "idle" | "loading" | "success" | "error";
 
 function todayLocalIso() {
@@ -87,7 +115,7 @@ function saoPauloIsoFromTimestamp(startTimestamp?: number | null) {
 
 // ─── Standings ──────────────────────────────────────────────────────────────
 export function useStandings(leagueUrl: string, tableType: "total" | "home" | "away" = "total") {
-  const standingsKey = `standings_${tableType}_${leagueUrl}`;
+  const standingsKey = `standings_v2_${tableType}_${leagueUrl}`;
   const [data, setData] = useState<SofaTeamStanding[]>(() => readStoredCache<{ teams?: SofaTeamStanding[] }>(standingsKey)?.data?.teams || []);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -154,13 +182,15 @@ function splitMatches(matches: SofaMatch[], leagueUrl: string, includeFallback =
 }
 
 function getStoredMatchSeed(mode: MatchFetchMode, leagueUrl: string) {
-  const seasonKey = `season_v3_${leagueUrl}`;
-  const windowKey = `window_v2_${leagueUrl}`;
+  const seasonKey = `season_v4_${leagueUrl}`;
+  const windowKey = `window_v3_${leagueUrl}`;
+  const previousSeasonKey = `season_v3_${leagueUrl}`;
+  const previousWindowKey = `window_v2_${leagueUrl}`;
   const legacySeasonKey = `season_v2_${leagueUrl}`;
   const legacyWindowKey = `window_v1_${leagueUrl}`;
   const keys = mode === "season"
-    ? [seasonKey, windowKey, legacySeasonKey, legacyWindowKey]
-    : [windowKey, legacyWindowKey];
+    ? [seasonKey, windowKey, previousSeasonKey, previousWindowKey, legacySeasonKey, legacyWindowKey]
+    : [windowKey, previousWindowKey, legacyWindowKey];
 
   for (const key of keys) {
     const stored = readStoredCache<SofaMatch[]>(key);
@@ -171,8 +201,8 @@ function getStoredMatchSeed(mode: MatchFetchMode, leagueUrl: string) {
 }
 
 export function useMatches(leagueUrl: string, mode: MatchFetchMode = "window") {
-  const seasonCacheKey = `season_v3_${leagueUrl}`;
-  const windowCacheKey = `window_v2_${leagueUrl}`;
+  const seasonCacheKey = `season_v4_${leagueUrl}`;
+  const windowCacheKey = `window_v3_${leagueUrl}`;
   const [lastMatches, setLastMatches] = useState<SofaMatch[]>(() => splitMatches(getStoredMatchSeed(mode, leagueUrl), leagueUrl).last);
   const [nextMatches, setNextMatches] = useState<SofaMatch[]>(() => splitMatches(getStoredMatchSeed(mode, leagueUrl), leagueUrl).next);
   const [status, setStatus] = useState<Status>("idle");
@@ -260,17 +290,10 @@ export function useLiveMatches(pollIntervalMs = 30_000) {
   const [status, setStatus] = useState<Status>("idle");
 
   const fetchData = useCallback(async (options?: FetchOptions) => {
+    void options;
     setStatus("loading");
     try {
-      const key = "live_v10_all";
-      const hit = cache[key];
-      let res: SofaLiveMatch[];
-      if (!options?.force && hit && Date.now() - hit.ts < 15_000) {
-        res = hit.data as SofaLiveMatch[];
-      } else {
-        res = await sofaScoreService.getLiveMatches();
-        cache[key] = { data: res, ts: Date.now() };
-      }
+      const res = await sofaScoreService.getLiveMatches();
       setData(Array.isArray(res) ? res : []);
       setStatus("success");
     } catch {
@@ -319,7 +342,7 @@ export function useTodayMatches() {
 
 // ─── Player Search ────────────────────────────────────────────────────────────
 export function useTopPlayers(leagueUrl: string, metric: "goals" | "assists") {
-  const topPlayersKey = `top_players_v3_${leagueUrl}_${metric}`;
+  const topPlayersKey = `top_players_v5_${leagueUrl}_${metric}`;
   const [data, setData] = useState<SofaTopPlayer[]>(() => {
     const stored = readStoredCache<SofaTopPlayer[]>(topPlayersKey)?.data;
     return Array.isArray(stored) ? stored : [];
@@ -330,12 +353,16 @@ export function useTopPlayers(leagueUrl: string, metric: "goals" | "assists") {
   const fetchData = useCallback(async (options?: FetchOptions) => {
     setStatus("loading");
     try {
-      const res = await cached(
-        topPlayersKey,
-        () => sofaScoreService.getTopPlayers(leagueUrl, metric),
-        options?.force
-      );
-      setData(Array.isArray(res) && res.length > 0 ? res : getFallbackTopPlayers(metric));
+      const cachedPlayers = readCachedArray<SofaTopPlayer>(topPlayersKey, options?.force);
+      if (cachedPlayers && cachedPlayers.length > 0) {
+        setData(cachedPlayers);
+        setStatus("success");
+        return;
+      }
+      const res = await sofaScoreService.getTopPlayers(leagueUrl, metric);
+      const players = Array.isArray(res) ? res : [];
+      if (players.length > 0) writeArrayCache(topPlayersKey, players);
+      setData(players.length > 0 ? players : getFallbackTopPlayers(metric));
       setStatus("success");
     } catch (e) {
       setData(getFallbackTopPlayers(metric));
@@ -387,9 +414,22 @@ export function usePlayerStats(playerUrl: string | null) {
       return;
     }
     setStatus("loading");
-    cached(`player_stats_v4_${playerUrl}`, () => sofaScoreService.getPlayerStats(playerUrl))
+    const playerStatsKey = `player_stats_v6_${playerUrl}`;
+    const stored = readStoredCache<PlayerDetail>(playerStatsKey)?.data;
+    if (hasPlayerSeasonStats(stored)) {
+      cache[playerStatsKey] = { data: stored, ts: Date.now() };
+      setData(stored);
+      setStatus("success");
+      return;
+    }
+
+    sofaScoreService.getPlayerStats(playerUrl)
       .then((res) => {
-        setData(res ?? getFallbackPlayerDetail(playerUrl));
+        if (hasPlayerSeasonStats(res)) {
+          cache[playerStatsKey] = { data: res, ts: Date.now() };
+          writeStoredCache(playerStatsKey, res);
+        }
+        setData(isRealPlayerDetail(res) ? res : getFallbackPlayerDetail(playerUrl));
         setStatus("success");
       })
       .catch(() => {
@@ -425,27 +465,29 @@ export function useOdds() {
 }
 
 // ─── Team Players ─────────────────────────────────────────────────────────────
-export function useTeamPlayers(teamName: string | null) {
+export function useTeamPlayers(teamName: string | null, teamId?: number | null) {
   const [data, setData] = useState<TeamPlayer[]>([]);
   const [status, setStatus] = useState<Status>("idle");
 
   useEffect(() => {
-    if (!teamName) {
+    if (!teamName && !teamId) {
       setData([]);
       setStatus("idle");
       return;
     }
+    const safeTeamName = teamName || "";
+    const cacheKey = teamId ? `id_${teamId}` : `name_${safeTeamName}`;
     setStatus("loading");
-    cached(`team_players_v7_${teamName}`, () => sofaScoreService.getTeamPlayers(teamName))
+    cached(`team_players_v9_${cacheKey}`, () => sofaScoreService.getTeamPlayers(safeTeamName, teamId))
       .then((res) => {
-        setData(Array.isArray(res) && res.length > 0 ? res : getFallbackTeamPlayers(teamName));
+        setData(Array.isArray(res) && res.length > 0 ? res : getFallbackTeamPlayers(safeTeamName));
         setStatus("success");
       })
       .catch(() => {
-        setData(getFallbackTeamPlayers(teamName));
+        setData(getFallbackTeamPlayers(safeTeamName));
         setStatus("error");
       });
-  }, [teamName]);
+  }, [teamName, teamId]);
 
   return { data, status };
 }

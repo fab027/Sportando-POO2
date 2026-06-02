@@ -7,15 +7,31 @@ const SCRAPERFC_DATA_URL = "/scraperfc-api/sports-data";
 const SCRAPERFC_RAW_URL = "/scraperfc-api/sofascore";
 const SPORTS_DATA_TIMEOUT_MS = 4000;
 const SOFASCORE_DIRECT_TIMEOUT_MS = 7000;
-const SCRAPERFC_TIMEOUT_MS = 20000;
+const SCRAPERFC_TIMEOUT_MS = 45000;
 const SOFASCORE_DIRECT_COOLDOWN_MS = 60_000;
 const SCRAPERFC_COOLDOWN_MS = 60_000;
 const SEASON_EVENTS_PAGE_LIMIT = 7;
 const WINDOW_EVENTS_PAGE_LIMIT = 2;
 const SEASON_ROUND_BATCH_SIZE = 6;
+const PLAYER_SEASON_BATCH_SIZE = 6;
 const scraperFcUnavailableUntilByScope = new Map<string, number>();
 const currentSeasonIdCache = new Map<number, Promise<number>>();
 let sofaScoreDirectUnavailableUntil = 0;
+
+const SCRAPERFC_BACKED_ACTIONS = new Set([
+  "event_goal_incidents",
+  "live",
+  "matches_last",
+  "matches_next",
+  "matches_season",
+  "player_search",
+  "player_stats",
+  "standings",
+  "team_next_matches",
+  "team_players",
+  "today_matches",
+  "top_players",
+]);
 
 const teamImageUrl = (teamId?: number | null) =>
   teamId ? `https://api.sofascore.app/api/v1/team/${teamId}/image` : null;
@@ -35,14 +51,20 @@ const markScraperScopeUnavailable = (scope: string) => {
   scraperFcUnavailableUntilByScope.set(scope, Date.now() + SCRAPERFC_COOLDOWN_MS);
 };
 
-export async function fetchSofaScoreJson(path: string) {
+type SofaScoreFetchOptions = { allowScraperFallback?: boolean };
+
+export async function fetchSofaScoreJson(path: string, options: SofaScoreFetchOptions = {}) {
+  const allowScraperFallback = options.allowScraperFallback ?? true;
   const scraperScope = `raw:${path}`;
   try {
     if (Date.now() >= sofaScoreDirectUnavailableUntil) {
       sofaScoreDirectUnavailableUntil = Date.now() + 5_000;
       const res = await fetchWithTimeout(
         `${SOFASCORE_PROXY_URL}${path}`,
-        { headers: { Accept: "application/json" } },
+        {
+          headers: { Accept: "application/json" },
+          cache: path.includes("/events/live") ? "no-store" : "default",
+        },
         SOFASCORE_DIRECT_TIMEOUT_MS
       );
       if (!res.ok) {
@@ -60,7 +82,7 @@ export async function fetchSofaScoreJson(path: string) {
     if (directError instanceof DOMException && directError.name === "AbortError") {
       sofaScoreDirectUnavailableUntil = Date.now() + SOFASCORE_DIRECT_COOLDOWN_MS;
     }
-    if (!import.meta.env.DEV || scraperScopeUnavailable(scraperScope)) {
+    if (!allowScraperFallback || !import.meta.env.DEV || scraperScopeUnavailable(scraperScope)) {
       throw directError;
     }
 
@@ -80,7 +102,7 @@ export async function fetchSofaScoreJson(path: string) {
 }
 
 async function sofaFetch(path: string) {
-  return fetchSofaScoreJson(path);
+  return fetchSofaScoreJson(path, { allowScraperFallback: false });
 }
 
 async function callScraperFcSportsData(body: Record<string, unknown>) {
@@ -114,7 +136,10 @@ async function callLegacySportsData(body: Record<string, unknown>) {
   if (import.meta.env.DEV) {
     try {
       return await callLocalSofaScore(body);
-    } catch {
+    } catch (error) {
+      if (SCRAPERFC_BACKED_ACTIONS.has(String(body.action || ""))) {
+        throw error;
+      }
       // Some legacy actions still only exist in the Edge Function.
     }
   }
@@ -450,13 +475,29 @@ const playerAge = (player: any) =>
 
 const findFootballTeam = async (teamName: string) => {
   const searchData = await sofaFetch(`/search/teams?q=${encodeURIComponent(teamName)}&page=0`);
+  const query = normalizeText(teamName);
   return (Array.isArray(searchData?.results) ? searchData.results : [])
     .map((item: any) => item.entity)
-    .find((entity: any) => entity?.sport?.slug === "football" && entity?.gender !== "F");
+    .filter((entity: any) => entity?.sport?.slug === "football" && entity?.gender !== "F")
+    .map((entity: any) => {
+      const candidates = [entity?.name, entity?.shortName, entity?.nameCode, entity?.slug].filter(Boolean).map((value) => normalizeText(String(value)));
+      const exact = candidates.some((value) => value === query);
+      const starts = candidates.some((value) => value.startsWith(query) || query.startsWith(value));
+      const includes = candidates.some((value) => value.includes(query) || query.includes(value));
+      return {
+        entity,
+        score: Number(entity?.userCount || 0) + (exact ? 100_000_000 : starts ? 50_000_000 : includes ? 10_000_000 : 0),
+      };
+    })
+    .sort((a: any, b: any) => b.score - a.score)[0]?.entity;
 };
+
+const looksLikePlayerEntity = (player: any) =>
+  Boolean(player?.position || player?.dateOfBirthTimestamp || player?.jerseyNumber || player?.team);
 
 const isMaleFootballPlayer = (player: any) =>
   player?.id &&
+  looksLikePlayerEntity(player) &&
   (player?.sport?.slug === "football" || player?.team?.sport?.slug === "football") &&
   player?.gender !== "F" &&
   player?.team?.gender !== "F";
@@ -488,13 +529,21 @@ const searchPlayerScore = (player: any, query: string) => {
 const extractPlayersFromSearch = (data: any, query: string) => {
   const items = Array.isArray(data?.results) ? data.results : [];
   return items
+    .filter((item: any) => !item?.type || item.type === "player")
     .map((item: any) => (item?.type === "player" ? item.entity : item?.entity || item?.player || item))
     .filter(isMaleFootballPlayer)
     .filter((player: any) => playerUrl(player))
     .map((player: any) => ({ player, score: searchPlayerScore(player, query) }));
 };
 
-const playerSeasonPairs = (seasonsData: any, limit = 12) => {
+const playerSeasonSupportsOverall = (seasonsData: any, uniqueTournamentId: number, seasonId: number) => {
+  const typesMap = seasonsData?.typesMap || {};
+  const tournamentTypes = typesMap[String(uniqueTournamentId)] || typesMap[uniqueTournamentId] || {};
+  const seasonTypes = tournamentTypes[String(seasonId)] || tournamentTypes[seasonId];
+  return !Array.isArray(seasonTypes) || seasonTypes.includes("overall");
+};
+
+const playerSeasonPairs = (seasonsData: any) => {
   const groups = Array.isArray(seasonsData?.uniqueTournamentSeasons)
     ? seasonsData.uniqueTournamentSeasons
     : [];
@@ -504,13 +553,15 @@ const playerSeasonPairs = (seasonsData: any, limit = 12) => {
   for (const group of groups) {
     const uniqueTournament = group?.uniqueTournament;
     const seasons = Array.isArray(group?.seasons) ? group.seasons : group?.season ? [group.season] : [];
-    for (const season of seasons.slice(0, 3)) {
+    for (const season of seasons) {
       if (!uniqueTournament?.id || !season?.id) continue;
-      const key = `${uniqueTournament.id}:${season.id}`;
+      const uniqueTournamentId = Number(uniqueTournament.id);
+      const seasonId = Number(season.id);
+      if (!playerSeasonSupportsOverall(seasonsData, uniqueTournamentId, seasonId)) continue;
+      const key = `${uniqueTournamentId}:${seasonId}`;
       if (seen.has(key)) continue;
       seen.add(key);
       pairs.push({ uniqueTournament, season });
-      if (pairs.length >= limit) return pairs;
     }
   }
 
@@ -557,21 +608,28 @@ async function getPlayerSeasons(playerId: number, player: any) {
     uniqueTournamentSeasons: [],
   }));
   const pairs = playerSeasonPairs(seasonsData);
-  const settled = await Promise.allSettled(
-    pairs.map(async (pair) => {
-      const statsData = await sofaFetch(
-        `/player/${playerId}/unique-tournament/${pair.uniqueTournament.id}/season/${pair.season.id}/statistics/overall`
-      );
-      return mapSeasonStats(statsData, pair, player);
-    })
-  );
+  const results: PlayerSeasonStats[] = [];
 
-  return settled
-    .filter((entry): entry is PromiseFulfilledResult<PlayerSeasonStats | null> => entry.status === "fulfilled")
-    .map((entry) => entry.value)
-    .filter((season): season is PlayerSeasonStats => Boolean(season))
-    .filter((season) => season.matchesPlayed > 0 || season.minutes > 0 || season.goals > 0 || season.assists > 0)
-    .sort((a, b) => seasonSortValue(b.season) - seasonSortValue(a.season));
+  for (let index = 0; index < pairs.length; index += PLAYER_SEASON_BATCH_SIZE) {
+    const batch = pairs.slice(index, index + PLAYER_SEASON_BATCH_SIZE);
+    const settled = await Promise.allSettled(
+      batch.map(async (pair) => {
+        const statsData = await sofaFetch(
+          `/player/${playerId}/unique-tournament/${pair.uniqueTournament.id}/season/${pair.season.id}/statistics/overall`
+        );
+        return mapSeasonStats(statsData, pair, player);
+      })
+    );
+
+    settled
+      .filter((entry): entry is PromiseFulfilledResult<PlayerSeasonStats | null> => entry.status === "fulfilled")
+      .map((entry) => entry.value)
+      .filter((season): season is PlayerSeasonStats => Boolean(season))
+      .filter((season) => season.matchesPlayed > 0 || season.minutes > 0 || season.goals > 0 || season.assists > 0)
+      .forEach((season) => results.push(season));
+  }
+
+  return results.sort((a, b) => seasonSortValue(b.season) - seasonSortValue(a.season));
 }
 
 function todayLocalIso() {
@@ -761,24 +819,34 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
   }
 
   if (action === "team_players") {
-    const team = await findFootballTeam(String(body.teamName));
+    const requestedTeamId = Number(body.teamId);
+    const team =
+      Number.isFinite(requestedTeamId) && requestedTeamId > 0
+        ? { id: requestedTeamId }
+        : await findFootballTeam(String(body.teamName || ""));
     if (!team?.id) return [];
     const playersData = await sofaFetch(`/team/${team.id}/players`);
-    return (Array.isArray(playersData?.players) ? playersData.players : []).map((row: any): TeamPlayer => {
-      const player = row.player || row;
-      return {
-        id: player.id,
-        name: player.name || player.shortName || "",
-        imageUrl: playerImageUrl(player.id),
-        position: mapPosition(player.position),
-        shirtNumber: player.jerseyNumber ? Number(player.jerseyNumber) : null,
-        nationality: player.country?.name || "",
-        age: player.dateOfBirthTimestamp
-          ? Math.floor((Date.now() - player.dateOfBirthTimestamp * 1000) / (365.25 * 24 * 60 * 60 * 1000))
-          : null,
-        url: playerUrl(player),
-      };
-    });
+    return (Array.isArray(playersData?.players) ? playersData.players : [])
+      .filter((row: any) => {
+        const player = row.player || row;
+        const playerTeamId = Number(player?.team?.id);
+        return !Number.isFinite(playerTeamId) || playerTeamId <= 0 || playerTeamId === Number(team.id);
+      })
+      .map((row: any): TeamPlayer => {
+        const player = row.player || row;
+        return {
+          id: player.id,
+          name: player.name || player.shortName || "",
+          imageUrl: playerImageUrl(player.id),
+          position: mapPosition(player.position),
+          shirtNumber: player.jerseyNumber ? Number(player.jerseyNumber) : null,
+          nationality: player.country?.name || "",
+          age: player.dateOfBirthTimestamp
+            ? Math.floor((Date.now() - player.dateOfBirthTimestamp * 1000) / (365.25 * 24 * 60 * 60 * 1000))
+            : null,
+          url: playerUrl(player),
+        };
+      });
   }
 
   if (action === "team_next_matches") {
@@ -820,6 +888,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
     const player = detail?.player || {};
     const seasons = await getPlayerSeasons(playerId, player);
     return {
+      id: player.id || playerId,
       name: player.name || player.shortName || "",
       team: player.team?.name || "",
       position: mapPosition(player.position),
@@ -837,12 +906,15 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
 }
 
 const EMPTY_RESULT_FALLBACK_ACTIONS = new Set([
+  "live",
   "matches_last",
   "matches_next",
   "matches_season",
   "today_matches",
   "standings",
+  "player_stats",
   "top_players",
+  "team_players",
   "team_next_matches",
 ]);
 
@@ -852,6 +924,11 @@ const isEmptyDataResult = (result: unknown) => {
     const teams = (result as { teams?: unknown }).teams;
     return Array.isArray(teams) && teams.length === 0;
   }
+  if (result && typeof result === "object" && "seasons" in result) {
+    const seasons = (result as { seasons?: unknown }).seasons;
+    return Array.isArray(seasons) && seasons.length === 0;
+  }
+  if (result && typeof result === "object") return Object.keys(result).length === 0;
   return false;
 };
 
@@ -1014,6 +1091,7 @@ export type PlayerSeasonStats = {
 };
 
 export type PlayerDetail = {
+  id?: number | null;
   name: string;
   team: string;
   position: string;
@@ -1094,8 +1172,8 @@ export const sofaScoreService = {
     return callSportsData({ action: "odds" });
   },
 
-  async getTeamPlayers(teamName: string): Promise<TeamPlayer[]> {
-    return callSportsData({ action: "team_players", teamName });
+  async getTeamPlayers(teamName: string, teamId?: number | null): Promise<TeamPlayer[]> {
+    return callSportsData({ action: "team_players", teamName, teamId });
   },
 
   async getTeamNextMatches(teamIds: string[], teamNames: string[] = []): Promise<SofaMatch[]> {

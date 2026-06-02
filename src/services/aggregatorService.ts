@@ -33,16 +33,8 @@ const getCurrentSeason = async (league: League) => {
   return { tournamentId, seasonId: Number(season.id), seasonName: season.year || season.name || "" };
 };
 
-const metricFromQuestion = (question: string, sport: League["sport"] = "football") => {
+const metricFromQuestion = (question: string, _sport: League["sport"] = "football") => {
   const q = normalize(question);
-
-  if (sport === "basketball") {
-    if (/(rebote|rebound)/.test(q)) return { key: "rebounds", label: "Rebotes", title: "Lideres em rebotes" };
-    if (/(assist|passe)/.test(q)) return { key: "assists", label: "Assistencias", title: "Lideres em assistencias" };
-    if (/(roubo|steal)/.test(q)) return { key: "steals", label: "Roubos", title: "Lideres em roubos" };
-    if (/(toco|bloqueio|block)/.test(q)) return { key: "blocks", label: "Tocos", title: "Lideres em tocos" };
-    return { key: "points", label: "Pontos", title: "Cestinhas" };
-  }
 
   if (/(participa|gols?\s*\+\s*assist|g\/a|g\+a|goal contributions|contribuicoes)/.test(q)) {
     return { key: "goalsAssistsSum", label: "G+A", title: "Lideres em participacoes em gols" };
@@ -57,10 +49,10 @@ const metricFromQuestion = (question: string, sport: League["sport"] = "football
 
 const asksLeagueRanking = (question: string) => {
   const q = normalize(question);
-  const rankingIntent = /(artilheiro|cestinha|ranking|rank|lideres|top\s*\d*|maiores|melhores|lista|classificacao de jogadores|classificacao de atletas)/.test(q);
-  const moreMetricIntent = /\b(mais|maior|melhor)\s+(gols?|pontos?|assistencias?|rebotes?|xg|xa|nota|rating)\b/.test(q);
-  const leagueScopeIntent = /(liga|campeonato|brasileirao|serie a|nba|premier|laliga|la liga|champions|temporada|competicao)/.test(q);
-  const metricIntent = /(gols?|goleador|pontos?|cestinha|assist|rebote|participa|contribuic|nota|rating|xg|xa|jogadores|atletas)/.test(q);
+  const rankingIntent = /(artilheiro|ranking|rank|lideres|top\s*\d*|maiores|melhores|lista|classificacao de jogadores|classificacao de atletas)/.test(q);
+  const moreMetricIntent = /\b(mais|maior|melhor)\s+(gols?|assistencias?|xg|xa|nota|rating)\b/.test(q);
+  const leagueScopeIntent = /(liga|campeonato|brasileirao|serie a|premier|laliga|la liga|champions|temporada|competicao)/.test(q);
+  const metricIntent = /(gols?|goleador|assist|participa|contribuic|nota|rating|xg|xa|jogadores|atletas)/.test(q);
   return (rankingIntent || (moreMetricIntent && leagueScopeIntent)) && metricIntent;
 };
 
@@ -528,7 +520,7 @@ export async function resolveSportsDashboard(question: string, league: League): 
     };
   }
 
-  if (/(hoje|jogos|partidas|calendario)/.test(q) && !/(artilheiro|cestinha|gol|pontos?|assist|nota|rating|xg|xa)/.test(q)) {
+  if (/(hoje|jogos|partidas|calendario)/.test(q) && !/(artilheiro|gol|assist|nota|rating|xg|xa)/.test(q)) {
     const date = new Intl.DateTimeFormat("en-CA", {
       timeZone: "America/Sao_Paulo",
       year: "numeric",

@@ -10,7 +10,7 @@ INSERT INTO public.profiles (user_id, nome, sport_profile)
 SELECT
   u.id,
   COALESCE(u.raw_user_meta_data->>'nome', u.raw_user_meta_data->>'full_name', split_part(u.email, '@', 1)),
-  COALESCE((u.raw_user_meta_data->>'sport_profile')::public.sport_profile, 'futebol'::public.sport_profile)
+  'futebol'::public.sport_profile
 FROM auth.users u
 LEFT JOIN public.profiles p ON p.user_id = u.id
 WHERE p.id IS NULL;

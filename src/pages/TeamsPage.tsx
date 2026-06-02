@@ -190,15 +190,6 @@ const LEAGUE_RULES: Record<string, LeagueStandingRule> = {
     notes: ["Liga BetPlay classifica os oito primeiros para a fase final do torneio."],
     tiebreakers: commonTiebreakers,
   },
-  nba: {
-    scope: "group",
-    zones: [
-      { from: 1, to: 6, label: "Playoffs", tone: "direct", filterGroup: "top" },
-      { from: 7, to: 10, label: "Play-in", tone: "playoff", filterGroup: "top" },
-    ],
-    notes: ["Regra aplicada por conferencia."],
-    tiebreakers: ["Percentual de vitorias", "Confronto direto", "Recorde dentro da conferencia", "Criterios NBA adicionais"],
-  },
 };
 
 const toneClasses: Record<RuleTone, { row: string; badge: string; dot: string; border: string }> = {
@@ -287,7 +278,8 @@ const TeamsPage = () => {
   const tableType = filters.table === "home" || filters.table === "away" ? filters.table : "total";
   const { data: standings, status, error, refetch } = useStandings(league.sofascoreUrl, tableType);
   const { lastMatches, nextMatches, status: matchesStatus, refetch: refetchMatches } = useMatches(league.sofascoreUrl);
-  const isLoading = status === "loading" || matchesStatus === "loading";
+  const isStandingsLoading = status === "loading" && standings.length === 0;
+  const isRefreshing = status === "loading" || matchesStatus === "loading";
 
   const filterDefs: FilterDef[] = [
     {
@@ -375,7 +367,6 @@ const TeamsPage = () => {
   }, [hasGroups, processed]);
 
   const knockoutRounds = useMemo<KnockoutRound[]>(() => {
-    if (sport !== "football") return [];
     const rounds = new Map<string, KnockoutRound>();
 
     [...lastMatches, ...nextMatches].forEach((match) => {
@@ -392,7 +383,7 @@ const TeamsPage = () => {
         matches: round.matches.sort((a, b) => a.startTimestamp - b.startTimestamp),
       }))
       .sort((a, b) => a.order - b.order);
-  }, [sport, lastMatches, nextMatches]);
+  }, [lastMatches, nextMatches]);
 
   const hasKnockoutBracket = knockoutRounds.length > 0;
 
@@ -413,7 +404,7 @@ const TeamsPage = () => {
             Classificacao - {league.flag} {league.name}
           </h1>
           <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
-            {isLoading ? (
+            {isStandingsLoading ? (
               <>
                 <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Carregando...
               </>
@@ -434,7 +425,7 @@ const TeamsPage = () => {
             onClick={refreshAll}
             className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-secondary"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
             Atualizar
           </button>
           <div className="relative w-full sm:w-72">
@@ -608,12 +599,12 @@ const TeamsPage = () => {
                       <td colSpan={11} className="px-3 py-2 text-xs font-semibold text-foreground">{group.name}</td>
                     </tr>
                   )}
-                  {group.teams.map((team) => {
+                  {group.teams.map((team, index) => {
                     const favorited = isFavorite("equipe", String(team.id));
                     const zone = getRuleZone(standingRule, team);
                     const zoneClasses = zone ? `${toneClasses[zone.tone].row} border-l-4 ${toneClasses[zone.tone].border}` : "border-l-4 border-l-transparent";
                     return (
-                      <tr key={team.id} className={`border-b border-border transition-colors last:border-0 hover:bg-secondary/30 ${zoneClasses}`}>
+                      <tr key={`${group.name || "table"}-${team.id}-${team.position}-${index}`} className={`border-b border-border transition-colors last:border-0 hover:bg-secondary/30 ${zoneClasses}`}>
                         <td className="px-3 py-2">
                           <PositionBadge pos={team.position} zone={zone} />
                         </td>
@@ -659,11 +650,11 @@ const TeamsPage = () => {
         </div>
       )}
 
-      {viewMode === "standings" && !isLoading && standings.length > 0 && processed.length === 0 && (
+      {viewMode === "standings" && !isStandingsLoading && standings.length > 0 && processed.length === 0 && (
         <p className="py-8 text-center text-sm text-muted-foreground">Nenhuma equipe corresponde aos filtros aplicados.</p>
       )}
 
-      {isLoading && standings.length === 0 && (
+      {isStandingsLoading && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[...Array(6)].map((_, index) => (
             <div key={index} className="animate-pulse rounded-xl border border-border bg-card p-5">

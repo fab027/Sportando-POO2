@@ -33,7 +33,7 @@ serve(async (req) => {
 
   try {
     const { messages, mode, context } = await req.json();
-    const selectedSport = context?.sport === "basketball" ? "basquete" : "futebol";
+    const selectedSport = "futebol";
     const selectedLeague = context?.league ? String(context.league) : "nao informada";
     const selectedCountry = context?.country ? String(context.country) : "nao informado";
 
@@ -55,7 +55,7 @@ serve(async (req) => {
 - Data atual real: ${currentDateBR} (${now.toISOString()})
 - Ano atual: ${currentYear}
 - Temporada europeia em curso: ${seasonEuropean}
-- Temporada brasileira (Brasileirão/NBB) em curso: ${seasonBrazilian}
+- Temporada brasileira (Brasileirao) em curso: ${seasonBrazilian}
 - Quando o usuário pedir dados "atuais", "recentes", "desta temporada" ou "agora", use SEMPRE ${currentYear} e a temporada vigente acima.
 - NUNCA assuma 2023 ou 2024 como ano atual. Se você não tiver dados confirmados de ${currentYear}, diga isso claramente em vez de inventar números antigos.
 - Sempre cite o ano/temporada de referência dos números que apresentar.`;
