@@ -23,7 +23,7 @@ cd Sportando-POO2
 ### 2. Instalar dependencias
 ```bash
 npm install
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 No Windows, o ScraperFC/Botasaurus tambem precisa de:
