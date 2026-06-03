@@ -42,7 +42,12 @@ const navItems = [
   { to: "/agregador", label: "Agregador", icon: Sparkles },
 ];
 
-const AppSidebar = () => {
+type AppSidebarProps = {
+  className?: string;
+  onNavigate?: () => void;
+};
+
+const AppSidebar = ({ className = "", onNavigate }: AppSidebarProps) => {
   const { sportClass, sportLabel } = useSport();
   const { profile, user, logout, isAuthenticated, updateProfile } = useAuth();
   const location = useLocation();
@@ -73,6 +78,7 @@ const AppSidebar = () => {
 
   const handleLogout = async () => {
     await logout();
+    onNavigate?.();
     navigate("/login");
   };
 
@@ -111,7 +117,7 @@ const AppSidebar = () => {
   };
 
   return (
-    <aside className={`${sportClass} flex h-screen w-64 flex-col border-r border-white/10 bg-sidebar text-sidebar-foreground`}>
+    <aside className={`${sportClass} flex h-full min-h-0 w-64 flex-col border-r border-white/10 bg-sidebar text-sidebar-foreground ${className}`}>
       <div className="flex items-center gap-3 border-b border-white/10 px-5 py-5">
         <BrandLogo className="h-10 w-10 rounded-xl" />
         <span className="font-display text-xl font-bold tracking-tight text-white">Sportando</span>
@@ -136,6 +142,7 @@ const AppSidebar = () => {
             <NavLink
               key={item.to}
               to={item.to}
+              onClick={onNavigate}
               className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
                 isActive
                   ? "bg-sport text-sport-foreground"
@@ -266,6 +273,7 @@ const AppSidebar = () => {
         ) : (
           <NavLink
             to="/login"
+            onClick={onNavigate}
             className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-white/[0.68] transition-colors hover:bg-white/10 hover:text-white"
           >
             <LogIn className="h-4 w-4" />

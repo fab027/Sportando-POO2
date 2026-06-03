@@ -383,19 +383,28 @@ export function usePlayerSearch() {
   const [status, setStatus] = useState<Status>("idle");
 
   const search = useCallback(async (query: string) => {
-    if (!query || query.length < 2) {
+    const safeQuery = query.trim();
+    if (!safeQuery || safeQuery.length < 2) {
       setResults([]);
+      setStatus("idle");
+      return;
+    }
+    const playerSearchKey = `player_search_v9_${safeQuery.toLowerCase()}`;
+    const storedResults = readCachedArray<PlayerSearchResult>(playerSearchKey);
+    if (storedResults && storedResults.length > 0) {
+      setResults(storedResults);
+      setStatus("success");
       return;
     }
     setStatus("loading");
     try {
-      const res = await cached(`player_search_v8_${query}`, () =>
-        sofaScoreService.searchPlayer(query)
-      );
-      setResults(Array.isArray(res) && res.length > 0 ? res : getFallbackPlayerSearch(query));
+      const res = await sofaScoreService.searchPlayer(safeQuery);
+      const players = Array.isArray(res) ? res : [];
+      if (players.length > 0) writeArrayCache(playerSearchKey, players);
+      setResults(players.length > 0 ? players : getFallbackPlayerSearch(safeQuery));
       setStatus("success");
     } catch {
-      setResults(getFallbackPlayerSearch(query));
+      setResults(getFallbackPlayerSearch(safeQuery));
       setStatus("error");
     }
   }, []);

@@ -275,10 +275,12 @@ function normalizeStatus(event: any) {
 
 const scoreNumber = (value: unknown) => (typeof value === "number" ? value : null);
 
-function scorePair(homeScore: any, awayScore: any) {
+function scorePair(homeScore: any, awayScore: any, preferCurrent = false) {
   const homePenaltyScore = scoreNumber(homeScore?.penalties);
   const awayPenaltyScore = scoreNumber(awayScore?.penalties);
-  const mainKeys = ["afterExtraTime", "normaltime", "current"];
+  const mainKeys = preferCurrent
+    ? ["current", "display", "afterExtraTime", "normaltime"]
+    : ["afterExtraTime", "normaltime", "current", "display"];
 
   const pickMain = (score: any) => {
     for (const key of mainKeys) {
@@ -324,7 +326,7 @@ const formatFootballMinute = (totalSeconds: number, period?: number | null) => {
 };
 
 function mapEvent(event: any): SofaMatch {
-  const scores = scorePair(event.homeScore, event.awayScore);
+  const scores = scorePair(event.homeScore, event.awayScore, event?.status?.type === "inprogress");
   return {
     id: event.id,
     homeTeamId: event.homeTeam?.id || null,
@@ -706,7 +708,7 @@ async function callLocalSofaScore(body: Record<string, unknown>) {
     return events
       .filter((event: any) => event?.status?.type === "inprogress")
       .map((event: any): SofaLiveMatch => {
-        const scores = scorePair(event.homeScore, event.awayScore);
+        const scores = scorePair(event.homeScore, event.awayScore, true);
         return {
           id: event.id,
           homeTeamId: event.homeTeam?.id || null,
@@ -912,6 +914,7 @@ const EMPTY_RESULT_FALLBACK_ACTIONS = new Set([
   "matches_season",
   "today_matches",
   "standings",
+  "player_search",
   "player_stats",
   "top_players",
   "team_players",

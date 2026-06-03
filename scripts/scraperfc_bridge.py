@@ -402,10 +402,10 @@ def score_number(value: Any) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def score_pair(home_score: dict[str, Any], away_score: dict[str, Any]) -> dict[str, int | None]:
+def score_pair(home_score: dict[str, Any], away_score: dict[str, Any], prefer_current: bool = False) -> dict[str, int | None]:
     home_penalty_score = score_number(home_score.get("penalties"))
     away_penalty_score = score_number(away_score.get("penalties"))
-    main_keys = ["afterExtraTime", "normaltime", "current"]
+    main_keys = ["current", "display", "afterExtraTime", "normaltime"] if prefer_current else ["afterExtraTime", "normaltime", "current", "display"]
 
     def pick_main(score: dict[str, Any]) -> int | None:
         for key in main_keys:
@@ -432,7 +432,7 @@ def map_event(event: dict[str, Any]) -> dict[str, Any]:
     city = venue.get("city") or {}
     home_score = event.get("homeScore") or {}
     away_score = event.get("awayScore") or {}
-    scores = score_pair(home_score, away_score)
+    scores = score_pair(home_score, away_score, (event.get("status") or {}).get("type") == "inprogress")
     round_info = event.get("roundInfo") or {}
 
     return {
@@ -790,13 +790,14 @@ def handle_action(body: dict[str, Any]) -> Any:
         return [
             {
                 **map_event(event),
-                "homeScore": score_pair(event.get("homeScore") or {}, event.get("awayScore") or {})["homeScore"] or 0,
-                "awayScore": score_pair(event.get("homeScore") or {}, event.get("awayScore") or {})["awayScore"] or 0,
+                "homeScore": scores["homeScore"] or 0,
+                "awayScore": scores["awayScore"] or 0,
                 "status": "Live",
                 **get_live_clock(event),
                 "country": event_country(event),
             }
             for event in data.get("events") or []
+            for scores in [score_pair(event.get("homeScore") or {}, event.get("awayScore") or {}, True)]
             if (event.get("status") or {}).get("type") == "inprogress"
         ]
 

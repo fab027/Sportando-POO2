@@ -172,7 +172,7 @@ const TeamName = ({
   imageUrl?: string | null;
   align?: "left" | "right";
 }) => (
-  <span className={`inline-flex min-w-0 items-center gap-2 ${align === "right" ? "justify-end" : ""}`}>
+  <span className={`inline-flex min-w-0 items-center gap-2 ${align === "right" ? "justify-start sm:justify-end" : ""}`}>
     {imageUrl ? (
       <img src={imageUrl} alt="" loading="lazy" className="h-6 w-6 shrink-0 object-contain" />
     ) : (
@@ -411,13 +411,13 @@ const MatchListCard = ({ m, liveTone = false, onSelect }: { m: MatchListItem; li
       onClick={() => onSelect?.(m)}
       className={`w-full rounded-xl border bg-card p-5 text-left hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-sport/50 ${liveTone ? "border-destructive/30" : "border-border"}`}
     >
-      <div className="flex items-center gap-4">
-        <div className="min-w-0 flex-1 text-right">
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-4">
+        <div className="min-w-0 flex-1 text-left sm:text-right">
           <p className="font-display font-semibold text-foreground">
             <TeamName name={m.homeTeam} imageUrl={m.homeTeamImageUrl} align="right" />
           </p>
         </div>
-        <div className="flex min-w-[4.5rem] items-center justify-center gap-2 text-center">
+        <div className="flex min-w-[4.5rem] items-center justify-start gap-2 text-center sm:justify-center">
           {!isUpcoming ? (
             <MatchScore match={m} liveTone={liveTone} />
           ) : (
@@ -430,7 +430,7 @@ const MatchListCard = ({ m, liveTone = false, onSelect }: { m: MatchListItem; li
           </p>
         </div>
       </div>
-      <div className="mt-2 flex items-center justify-center gap-3 flex-wrap">
+      <div className="mt-3 flex flex-wrap items-center gap-2 sm:justify-center sm:gap-3">
         <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${st.cls}`}>{st.text}</span>
         {m.roundInfo && <span className="text-xs text-muted-foreground">Rodada {m.roundInfo}</span>}
         <span className="text-xs text-muted-foreground">{m.tournament}</span>
@@ -700,13 +700,13 @@ const MatchesPage = () => {
               }}
               className="cursor-pointer rounded-xl border border-border bg-card p-5 hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-sport/50"
             >
-              <div className="flex items-center gap-4">
-                <div className="min-w-0 flex-1 text-right">
+              <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-4">
+                <div className="min-w-0 flex-1 text-left sm:text-right">
                   <p className="font-display font-semibold text-foreground">
                     <TeamName name={m.homeTeam} imageUrl={m.homeTeamImageUrl} align="right" />
                   </p>
                 </div>
-                <div className="text-center">
+                <div className="text-left sm:text-center">
                   {m.homeScore !== null ? (
                     <span className="font-display text-xl font-bold text-foreground">{m.homeScore} — {m.awayScore}</span>
                   ) : (
@@ -719,7 +719,7 @@ const MatchesPage = () => {
                   </p>
                 </div>
               </div>
-              <div className="mt-2 flex items-center justify-center gap-3 flex-wrap">
+              <div className="mt-3 flex flex-wrap items-center gap-2 sm:justify-center sm:gap-3">
                 <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${st.cls}`}>{st.text}</span>
                 <span className="text-xs text-muted-foreground">{m.tournament}</span>
                 {m.time && <span className="text-xs text-muted-foreground">{m.time}</span>}
@@ -747,13 +747,13 @@ const MatchesPage = () => {
             }}
             className="cursor-pointer rounded-xl border border-destructive/30 bg-card p-5 hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-sport/50"
           >
-            <div className="flex items-center gap-4">
-              <div className="min-w-0 flex-1 text-right">
+            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-4">
+              <div className="min-w-0 flex-1 text-left sm:text-right">
                 <p className="font-display font-semibold text-foreground">
                   <TeamName name={m.homeTeam} imageUrl={m.homeTeamImageUrl} align="right" />
                 </p>
               </div>
-              <div className="text-center">
+              <div className="text-left sm:text-center">
                 <span className="font-display text-xl font-bold text-destructive">{m.homeScore} — {m.awayScore}</span>
                 {m.minute && <p className="text-xs text-destructive font-medium mt-1">{m.minute}</p>}
               </div>
@@ -763,7 +763,7 @@ const MatchesPage = () => {
                 </p>
               </div>
             </div>
-            <div className="mt-2 flex items-center justify-center gap-3">
+            <div className="mt-3 flex flex-wrap items-center gap-2 sm:justify-center sm:gap-3">
               <span className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-destructive/10 text-destructive">🔴 Ao Vivo</span>
               <span className="text-xs text-muted-foreground">{m.tournament}</span>
               {"period" in m && m.period && <span className="text-xs text-muted-foreground">{m.period}</span>}

@@ -358,10 +358,12 @@ const playerImageUrl = (playerId?: number | null) =>
 
 const scoreNumber = (value: unknown) => (typeof value === "number" ? value : null);
 
-const scorePair = (homeScore: any, awayScore: any) => {
+const scorePair = (homeScore: any, awayScore: any, preferCurrent = false) => {
   const homePenaltyScore = scoreNumber(homeScore?.penalties);
   const awayPenaltyScore = scoreNumber(awayScore?.penalties);
-  const mainKeys = ["afterExtraTime", "normaltime", "current"];
+  const mainKeys = preferCurrent
+    ? ["current", "display", "afterExtraTime", "normaltime"]
+    : ["afterExtraTime", "normaltime", "current", "display"];
 
   const pickMain = (score: any) => {
     for (const key of mainKeys) {
@@ -380,7 +382,7 @@ const scorePair = (homeScore: any, awayScore: any) => {
 };
 
 const mapSofaEvent = (event: any) => {
-  const scores = scorePair(event.homeScore, event.awayScore);
+  const scores = scorePair(event.homeScore, event.awayScore, event?.status?.type === "inprogress");
   return {
     id: event.id,
     homeTeamId: event.homeTeam?.id || null,
@@ -475,7 +477,7 @@ const getLivePeriod = (event: any): string | null => {
 };
 
 const mapSofaLiveEvent = (event: any) => {
-  const scores = scorePair(event.homeScore, event.awayScore);
+  const scores = scorePair(event.homeScore, event.awayScore, true);
   return {
     id: event.id,
     homeTeamId: event.homeTeam?.id || null,

@@ -1196,12 +1196,12 @@ const Dashboard = () => {
       </div>
 
       <Card className={`p-3 ${selectedLiveMatches.length > 0 ? "border-destructive/30 bg-destructive/5" : ""}`}>
-        <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="flex items-center gap-2 text-sm font-bold uppercase text-foreground">
             <Radio className={`h-4 w-4 ${selectedLiveMatches.length > 0 ? "text-destructive" : "text-sport"}`} />
             Ao vivo agora
           </h2>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Popover>
               <PopoverTrigger asChild>
                 <button
